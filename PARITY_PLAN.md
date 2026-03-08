@@ -34,12 +34,16 @@ re-parsing, and only affected commands are re-executed.
 This is the single most important piece. Without it, tup-rust is just
 a fancy script runner.
 
-### PR D1: Scan → Database Sync
-- [ ] On `tup upd`, scan filesystem and compare to node table
-- [ ] Create FILE nodes for new files, flag MODIFY for changed mtimes
-- [ ] Flag DELETE for files in DB but not on disk
-- [ ] Flag CREATE for directories containing modified Tupfiles
-- [ ] Tests: add file → scan → node appears in DB
+### PR D1: Scan → Database Sync — DONE
+- [x] On `tup upd`, scan filesystem and compare to node table
+- [x] Create FILE nodes for new files, flag MODIFY for changed mtimes
+- [x] Flag DELETE for files in DB but not on disk
+- [x] Flag CREATE for directories containing modified Tupfiles
+- [x] Skip hidden files, .tup, .git directories
+- [x] Recursive directory sync with DIR node creation
+- [x] Tupfile change detection (mtime comparison)
+- [x] Wired into CLI: `tup upd` runs scan before parsing
+- [x] Tests: 9 tests (empty, new, modified, deleted, dirs, tupfile, hidden, no-change)
 
 ### PR D2: Parse → Database Commands
 - [ ] Parse only directories in create_list (not all Tupfiles)
