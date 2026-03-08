@@ -69,11 +69,14 @@ a fancy script runner.
 - [x] Verified: set_dependent_flags() for dir re-parse propagation
 - [x] Tested: modify input → only affected command re-runs
 
-### PR D4: Ghost Reclamation
-- [ ] At commit: scan ghost_root tree
-- [ ] Reclaim ghosts with no references (no dir, no links)
-- [ ] Multiple passes for nested ghosts
-- [ ] Tests: delete file → ghost created → ghost reclaimed
+### PR D4: Ghost Reclamation — DONE
+- [x] reclaim_ghosts(): multi-pass algorithm matching C exactly
+- [x] is_ghost_reclaimable(): checks dir refs, srcid refs, normal_links
+- [x] Group reclaimability: also checks sticky_links and bidirectional links
+- [x] tup.config ghosts NEVER reclaimed (verified against C)
+- [x] Cascading: child ghost deleted → parent re-checked in next pass
+- [x] delete_or_ghost(): convert to GHOST if has refs, else delete
+- [x] 8 tests (reclaimable, not-reclaimable, cascading, tup.config, delete-or-ghost)
 
 ### PR D5: Output Tracking
 - [ ] After command execution: verify declared outputs exist

@@ -6,6 +6,7 @@
 mod commands;
 mod entry;
 mod error;
+mod ghost;
 mod link_ops;
 mod node_ops;
 mod schema;
