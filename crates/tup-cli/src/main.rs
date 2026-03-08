@@ -136,11 +136,9 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
     for tupfile_rel in &tupfiles {
         let tupfile_path = tup_root.join(tupfile_rel);
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
-
-        let content = std::fs::read_to_string(&tupfile_path)?;
         let filename = tupfile_rel.to_string_lossy();
-        let mut reader = tup_parser::TupfileReader::parse(&content, &filename)?;
-        let rules = reader.evaluate()?;
+
+        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
 
         for rule in rules {
             all_rules.push((tupfile_dir.to_path_buf(), rule));
@@ -253,10 +251,9 @@ fn cmd_parse() -> anyhow::Result<()> {
     let mut total_rules = 0;
     for tupfile_rel in &tupfiles {
         let tupfile_path = tup_root.join(tupfile_rel);
-        let content = std::fs::read_to_string(&tupfile_path)?;
+        let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
-        let mut reader = tup_parser::TupfileReader::parse(&content, &filename)?;
-        let rules = reader.evaluate()?;
+        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
 
         if !rules.is_empty() {
             println!("{}:", tupfile_rel.display());
@@ -314,10 +311,8 @@ fn cmd_graph() -> anyhow::Result<()> {
             .to_string_lossy()
             .to_string();
 
-        let content = std::fs::read_to_string(&tupfile_path)?;
         let filename = tupfile_rel.to_string_lossy();
-        let mut reader = tup_parser::TupfileReader::parse(&content, &filename)?;
-        let rules = reader.evaluate()?;
+        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
 
         for rule in rules {
             all_rules.push((
@@ -332,6 +327,23 @@ fn cmd_graph() -> anyhow::Result<()> {
     let dot = tup_graph::rules_to_dot(&all_rules);
     print!("{dot}");
     Ok(())
+}
+
+/// Parse a Tupfile (either standard or Lua) and return rules.
+fn parse_tupfile_any(
+    tupfile_path: &Path,
+    tupfile_dir: &Path,
+    filename: &str,
+) -> anyhow::Result<Vec<tup_parser::Rule>> {
+    let content = std::fs::read_to_string(tupfile_path)?;
+
+    if filename.ends_with(".lua") {
+        tup_parser::parse_lua_tupfile(&content, filename, tupfile_dir)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    } else {
+        let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
+        Ok(reader.evaluate()?)
+    }
 }
 
 fn cmd_version() {
