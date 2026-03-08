@@ -241,7 +241,7 @@ Each PR is a self-contained, testable unit of work.
   - Flag changed/new/deleted files
   - Tests: scan detects changes
 
-- [ ] **PR #37: File monitor daemon**
+- [x] **PR #37: File monitor daemon**
   - `notify` crate integration
   - Continuous file watching
   - Event batching and deduplication
@@ -250,7 +250,7 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 8: Dependency Tracking Server (`tup-server`)
 
-- [ ] **PR #38: Basic server (no FUSE)**
+- [x] **PR #38: Basic server (no FUSE)**
   - Process spawning with environment setup
   - Stdout/stderr capture
   - Working directory management
