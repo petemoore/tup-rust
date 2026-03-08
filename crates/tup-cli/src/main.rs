@@ -2,12 +2,11 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Parser, Subcommand};
-use tup_types::TupId;
+use tup_types::{NodeType, TupId, DOT_DT};
 
 #[derive(Parser)]
 #[command(name = "tup")]
 #[command(about = "A file-based build system")]
-#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -37,14 +36,22 @@ enum Commands {
         /// Number of parallel jobs
         #[arg(short, long)]
         jobs: Option<usize>,
+
+        /// Skip filesystem scan
+        #[arg(long)]
+        no_scan: bool,
     },
     /// Display tup configuration options
-    Options,
+    Options {
+        /// Number of parallel jobs (override for display)
+        #[arg(short, long)]
+        jobs: Option<usize>,
+    },
     /// Display version information
     Version,
     /// Parse Tupfiles (without executing commands)
     Parse,
-    /// Scan for file changes
+    /// Scan for file changes and sync to database
     Scan,
     /// Start the file monitor daemon
     Monitor,
@@ -52,35 +59,104 @@ enum Commands {
     Stop,
     /// Display the dependency graph in Graphviz DOT format
     Graph {
+        /// Directory to graph (defaults to project root)
+        directory: Option<String>,
+
         /// Show directory nodes
         #[arg(long)]
         dirs: bool,
     },
     /// Manage variants
     Variant,
+
+    // -- Testing/debugging commands used by C test suite --
+
+    /// Register files with the database
+    Touch {
+        /// File paths to register
+        files: Vec<String>,
+    },
+    /// Check if a node exists in the database
+    #[command(name = "node_exists")]
+    NodeExists {
+        /// Directory containing the node (relative to tup root)
+        dir: String,
+        /// Node name to look for
+        name: String,
+    },
+    /// Check if any nodes have pending flags
+    #[command(name = "flags_exists")]
+    FlagsExists,
+    /// Check if a normal dependency link exists
+    #[command(name = "normal_exists")]
+    NormalExists {
+        /// Source directory
+        dir1: String,
+        /// Source node name
+        name1: String,
+        /// Destination directory
+        dir2: String,
+        /// Destination node name
+        name2: String,
+    },
+    /// Check if a sticky dependency link exists
+    #[command(name = "sticky_exists")]
+    StickyExists {
+        /// Source directory
+        dir1: String,
+        /// Source node name
+        name1: String,
+        /// Destination directory
+        dir2: String,
+        /// Destination node name
+        name2: String,
+    },
+    /// Display the server mode
+    Server,
 }
 
 fn main() {
     env_logger::init();
+
+    // Handle -v / --version before clap (C tup compatibility)
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 2 && (args[1] == "-v" || args[1] == "--version") {
+        cmd_version();
+        return;
+    }
+
     let cli = Cli::parse();
 
     let result = match cli.command {
         Some(Commands::Init { directory, no_sync, force }) => {
             cmd_init(directory, no_sync, force)
         }
-        Some(Commands::Upd { keep_going, jobs }) => cmd_upd(keep_going, jobs),
-        None => cmd_upd(false, None),
+        Some(Commands::Upd { keep_going, jobs, no_scan }) => cmd_upd(keep_going, jobs, no_scan),
+        None => cmd_upd(false, None, false),
         Some(Commands::Parse) => cmd_parse(),
         Some(Commands::Version) => {
             cmd_version();
             Ok(())
         }
-        Some(Commands::Options) => {
-            cmd_options();
+        Some(Commands::Options { jobs }) => {
+            cmd_options(jobs);
             Ok(())
         }
-        Some(Commands::Graph { dirs: _ }) => cmd_graph(),
+        Some(Commands::Graph { directory: _, dirs: _ }) => cmd_graph(),
         Some(Commands::Scan) => cmd_scan(),
+        Some(Commands::Touch { files }) => cmd_touch(files),
+        Some(Commands::NodeExists { dir, name }) => cmd_node_exists(&dir, &name),
+        Some(Commands::FlagsExists) => cmd_flags_exists(),
+        Some(Commands::NormalExists { dir1, name1, dir2, name2 }) => {
+            cmd_link_exists(&dir1, &name1, &dir2, &name2, tup_types::LinkType::Normal)
+        }
+        Some(Commands::StickyExists { dir1, name1, dir2, name2 }) => {
+            cmd_link_exists(&dir1, &name1, &dir2, &name2, tup_types::LinkType::Sticky)
+        }
+        Some(Commands::Server) => {
+            cmd_server();
+            Ok(())
+        }
         Some(_) => {
             eprintln!("Command not yet implemented");
             Ok(())
@@ -100,6 +176,27 @@ fn cmd_init(directory: Option<PathBuf>, no_sync: bool, force: bool) -> anyhow::R
         std::fs::create_dir_all(&dir)?;
     }
 
+    // Without --force, check if .tup exists in any parent directory
+    if !force {
+        let check_dir = if dir.is_absolute() {
+            dir.clone()
+        } else {
+            std::env::current_dir()?.join(&dir)
+        };
+        if tup_platform::init::find_tup_dir(&check_dir).is_some() {
+            eprintln!("tup warning: database already exists in a parent directory");
+            process::exit(1);
+        }
+    }
+
+    // If force, remove existing database so it can be re-created
+    if force {
+        let db_path = dir.join(".tup").join("db");
+        if db_path.exists() {
+            std::fs::remove_file(&db_path)?;
+        }
+    }
+
     let db_sync = !no_sync;
 
     match tup_platform::init::init_command(&dir, db_sync, force) {
@@ -115,23 +212,26 @@ fn cmd_init(directory: Option<PathBuf>, no_sync: bool, force: bool) -> anyhow::R
     }
 }
 
-fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
+fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
     // Find the tup root
     let tup_root = tup_platform::init::find_tup_dir(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .tup directory found. Run 'tup init' first."))?;
 
-    // Phase 1: Scan filesystem and sync to database
+    // Phase 1: Scan filesystem and sync to database (unless --no-scan)
     let db = tup_db::TupDb::open(&tup_root, false)?;
     let mut cache = tup_db::EntryCache::new();
-    let sync_result = tup_db::sync_filesystem(&db, &mut cache, &tup_root)?;
 
-    if sync_result.files_added > 0 || sync_result.files_modified > 0 || sync_result.files_deleted > 0 {
-        eprintln!(
-            "[ tup ] Scan: {} new, {} modified, {} deleted",
-            sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
-        );
+    if !no_scan {
+        let sync_result = tup_db::sync_filesystem(&db, &mut cache, &tup_root)?;
+
+        if sync_result.files_added > 0 || sync_result.files_modified > 0 || sync_result.files_deleted > 0 {
+            eprintln!(
+                "[ tup ] Scan: {} new, {} modified, {} deleted",
+                sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
+            );
+        }
     }
 
     // Phase 2: Parse Tupfiles and store commands in database
@@ -180,6 +280,10 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
     let modified_cmds = tup_db::get_modified_commands(&db)?;
 
     if modified_cmds.is_empty() {
+        // Clear any remaining scan/parse flags
+        db.begin()?;
+        db.flags_clear_all()?;
+        db.commit()?;
         println!("[ tup ] No commands to execute. Everything is up-to-date.");
         return Ok(());
     }
@@ -203,9 +307,6 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
     for cmd_id in &modified_cmds {
         if let Some(row) = db.node_select_by_id(*cmd_id)? {
             let dir_id = row.dir;
-            // The command is stored in the node name as "cmd:hash"
-            // We need to find the actual command — look for it in the Tupfile
-            // For now, use the display string or reconstruct from rules
             let display = row.display.clone();
             let cmd_name = row.name.clone();
             dir_commands.entry(dir_id).or_default().push((*cmd_id, cmd_name, display));
@@ -213,7 +314,6 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
     }
 
     // Re-parse Tupfiles to get actual command strings for execution
-    // (The DB stores a hash as the node name, not the full command)
     let mut all_rules: Vec<(PathBuf, tup_parser::Rule)> = Vec::new();
     for tupfile_rel in &tupfiles {
         let tupfile_path = tup_root.join(tupfile_rel);
@@ -225,8 +325,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
         }
     }
 
-    // Execute all rules (for now — full incremental filtering comes later
-    // when we have proper command identity tracking)
+    // Execute all rules
     all_rules.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut current_dir: Option<PathBuf> = None;
@@ -292,6 +391,9 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
         for cmd_id in &modified_cmds {
             tup_db::mark_command_done(&db, *cmd_id)?;
         }
+
+        // Clear all remaining flag lists (scan/parse flags)
+        db.flags_clear_all()?;
     }
     db.commit()?;
 
@@ -308,8 +410,6 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
 
 /// Resolve a relative directory path to its TupId in the database.
 fn resolve_dir_id(db: &tup_db::TupDb, rel_path: &Path) -> anyhow::Result<TupId> {
-    use tup_types::DOT_DT;
-
     if rel_path.as_os_str().is_empty() || rel_path == Path::new(".") {
         return Ok(DOT_DT);
     }
@@ -324,6 +424,94 @@ fn resolve_dir_id(db: &tup_db::TupDb, rel_path: &Path) -> anyhow::Result<TupId> 
     }
 
     Ok(current)
+}
+
+/// Resolve a directory path, creating missing DIR nodes along the way.
+fn ensure_dir_nodes(db: &tup_db::TupDb, dir_path: &Path) -> anyhow::Result<TupId> {
+    if dir_path.as_os_str().is_empty() || dir_path == Path::new(".") {
+        return Ok(DOT_DT);
+    }
+
+    let mut current = DOT_DT;
+    for component in dir_path.components() {
+        let name = component.as_os_str().to_string_lossy();
+        match db.node_select(current, &name)? {
+            Some(row) => current = row.id,
+            None => {
+                let id = db.node_insert(
+                    current, &name, NodeType::Dir,
+                    -1, 0, -1, None, None,
+                )?;
+                current = id;
+            }
+        }
+    }
+
+    Ok(current)
+}
+
+/// Normalize a path by resolving `.` and `..` components.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                // Only pop if we have a normal component to go back from
+                if components.last().is_some_and(|c| matches!(c, std::path::Component::Normal(_))) {
+                    components.pop();
+                } else {
+                    components.push(component);
+                }
+            }
+            std::path::Component::CurDir => {}
+            _ => components.push(component),
+        }
+    }
+    components.iter().collect()
+}
+
+/// Resolve a file path (from CLI arg) to a path relative to the tup root.
+fn resolve_to_tup_relative(cwd: &Path, tup_root: &Path, path: &str) -> anyhow::Result<PathBuf> {
+    let full_path = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        cwd.join(path)
+    };
+
+    let normalized = normalize_path(&full_path);
+
+    // Try direct prefix stripping first
+    if let Ok(rel) = normalized.strip_prefix(tup_root) {
+        return Ok(rel.to_path_buf());
+    }
+
+    // On macOS, /tmp is a symlink to /private/tmp. Try canonicalizing
+    // both paths to resolve symlinks before comparing.
+    if let (Ok(canon_path), Ok(canon_root)) = (
+        try_canonicalize(&normalized),
+        try_canonicalize(tup_root),
+    ) {
+        if let Ok(rel) = canon_path.strip_prefix(&canon_root) {
+            return Ok(rel.to_path_buf());
+        }
+    }
+
+    Err(anyhow::anyhow!("path '{}' is outside tup root '{}'", path, tup_root.display()))
+}
+
+/// Try to canonicalize a path, falling back to the original if it doesn't exist.
+fn try_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    // Try the full path first
+    if let Ok(p) = path.canonicalize() {
+        return Ok(p);
+    }
+    // If the file doesn't exist, canonicalize the parent and append the filename
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if let Ok(canon_parent) = parent.canonicalize() {
+            return Ok(canon_parent.join(name));
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "cannot canonicalize"))
 }
 
 fn execute_dir_rules(
@@ -396,16 +584,15 @@ fn cmd_scan() -> anyhow::Result<()> {
     let tup_root = tup_platform::init::find_tup_dir(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
 
-    let result = tup_platform::scanner::scan_directory(&tup_root)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // Actually sync to database (not just report stats)
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+    let mut cache = tup_db::EntryCache::new();
+    let sync_result = tup_db::sync_filesystem(&db, &mut cache, &tup_root)?;
 
-    println!("Scan results:");
-    println!("  {} file(s) found", result.new_files.len());
-    println!("  {} directory(ies) found", result.directories.len());
-
-    let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("  {} Tupfile(s) found", tupfiles.len());
+    eprintln!(
+        "[ tup ] Scan: {} new, {} modified, {} deleted",
+        sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
+    );
 
     Ok(())
 }
@@ -464,15 +651,170 @@ fn parse_tupfile_any(
 
 fn cmd_version() {
     println!("tup-rust v{}", env!("CARGO_PKG_VERSION"));
-    println!("Platform: {} ({})",
-        tup_platform::platform::platform_name(),
-        tup_platform::platform::arch_name(),
-    );
 }
 
-fn cmd_options() {
-    let opts = tup_platform::options::TupOptions::new();
+fn cmd_options(jobs: Option<usize>) {
+    let mut opts = tup_platform::options::TupOptions::new();
+
+    // Load ~/.tupoptions (user-level defaults)
+    if let Some(home) = std::env::var_os("HOME") {
+        let user_opts = PathBuf::from(home).join(".tupoptions");
+        let _ = opts.load_file(&user_opts);
+    }
+
+    // Load .tup/options (project-level)
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(tup_root) = tup_platform::init::find_tup_dir(&cwd) {
+            let project_opts = tup_root.join(".tup").join("options");
+            let _ = opts.load_file(&project_opts);
+        }
+    }
+
+    // Apply -j override
+    if let Some(j) = jobs {
+        opts.set("updater.num_jobs", &j.to_string());
+    }
+
     for (name, value) in opts.show() {
         println!("{name} = {value}");
+    }
+}
+
+fn cmd_server() {
+    // Report server mode. On macOS there's no LD_PRELOAD or FUSE support,
+    // so we report "none". On Linux, we'll report the configured mode.
+    #[cfg(target_os = "linux")]
+    println!("ldpreload");
+    #[cfg(not(target_os = "linux"))]
+    println!("none");
+}
+
+// -- Testing/debugging commands --
+
+fn cmd_touch(files: Vec<String>) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found. Run 'tup init' first."))?;
+
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+    db.begin()?;
+
+    for file in &files {
+        let rel_path = resolve_to_tup_relative(&cwd, &tup_root, file)?;
+        touch_path(&db, &tup_root, &rel_path)?;
+    }
+
+    db.commit()?;
+    Ok(())
+}
+
+/// Create or update a node in the database for the given path.
+fn touch_path(db: &tup_db::TupDb, tup_root: &Path, rel_path: &Path) -> anyhow::Result<()> {
+    let parent = rel_path.parent().unwrap_or(Path::new(""));
+    let name = rel_path.file_name()
+        .ok_or_else(|| anyhow::anyhow!("no file name in path: {}", rel_path.display()))?
+        .to_string_lossy();
+
+    // Ensure parent directory nodes exist
+    let dir_id = ensure_dir_nodes(db, parent)?;
+
+    // Determine node type based on what's on disk
+    let full_path = tup_root.join(rel_path);
+    let node_type = if full_path.is_dir() {
+        NodeType::Dir
+    } else {
+        NodeType::File
+    };
+
+    // Create or update the node
+    match db.node_select(dir_id, &name)? {
+        Some(existing) => {
+            // Flag existing node as modified
+            db.flag_add(existing.id, tup_types::TupFlags::Modify)?;
+        }
+        None => {
+            let id = db.node_insert(dir_id, &name, node_type, -1, 0, -1, None, None)?;
+            db.flag_add(id, tup_types::TupFlags::Modify)?;
+            if node_type == NodeType::Dir {
+                db.flag_add(id, tup_types::TupFlags::Create)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_node_exists(dir: &str, name: &str) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
+
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+
+    // Resolve directory path to dir_id
+    let dir_id = match resolve_dir_id(&db, Path::new(dir)) {
+        Ok(id) => id,
+        Err(_) => {
+            // Directory doesn't exist in DB — node can't exist
+            process::exit(1);
+        }
+    };
+
+    // Check if the node exists
+    match db.node_select(dir_id, name)? {
+        Some(_) => {
+            // Node exists — exit 0 (success)
+            Ok(())
+        }
+        None => {
+            // Node doesn't exist — exit non-zero
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_flags_exists() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
+
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+
+    if db.flags_empty()? {
+        // No flags — clean state — exit 0
+        Ok(())
+    } else {
+        // Flags exist — dirty state — exit non-zero
+        process::exit(1);
+    }
+}
+
+fn cmd_link_exists(
+    dir1: &str,
+    name1: &str,
+    dir2: &str,
+    name2: &str,
+    link_type: tup_types::LinkType,
+) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
+
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+
+    let dir1_id = resolve_dir_id(&db, Path::new(dir1))?;
+    let dir2_id = resolve_dir_id(&db, Path::new(dir2))?;
+
+    let node1 = db.node_select(dir1_id, name1)?
+        .ok_or_else(|| anyhow::anyhow!("node '{name1}' not found in dir '{dir1}'"))?;
+    let node2 = db.node_select(dir2_id, name2)?
+        .ok_or_else(|| anyhow::anyhow!("node '{name2}' not found in dir '{dir2}'"))?;
+
+    if db.link_exists(node1.id, node2.id, link_type)? {
+        // Link exists — exit code 11 (C tup convention)
+        process::exit(11);
+    } else {
+        // Link doesn't exist — exit code 0
+        Ok(())
     }
 }

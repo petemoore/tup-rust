@@ -98,11 +98,20 @@ a fancy script runner.
 
 ## Phase 2: C Test Suite Porting
 
-### PR T1: Test Runner Adaptation
-- [ ] Create a shell script wrapper that aliases `tup` to the Rust binary
-- [ ] Adapt test/tup.sh helper functions to work with Rust binary
-- [ ] Handle differences in output format (if any)
-- [ ] Run t0000-t0005 (init tests) — fix any failures
+### PR T1: Test Runner Adaptation — DONE
+- [x] Create a shell script wrapper that aliases `tup` to the Rust binary
+- [x] Adapt test/tup.sh helper functions to work with Rust binary
+- [x] Handle differences in output format (if any)
+- [x] Run t0000-t0005 (init tests) — fix any failures
+- [x] Run t1000-t1009 (basic commands) — 15/16 pass (t1009 needs DB migration)
+- [x] Add CLI commands: touch, node_exists, flags_exists, normal_exists, sticky_exists, server
+- [x] Fix init --force to re-create database
+- [x] Fix init to check parent directories for existing .tup
+- [x] Fix tup scan to sync filesystem to database
+- [x] Fix tup options to read ~/.tupoptions
+- [x] Fix version output for -v/--version compatibility
+- [x] Fix path resolution on macOS (/tmp → /private/tmp symlink)
+- [x] Clear all flag lists after successful update
 
 ### PR T2: t0xxx-t1xxx Tests
 - [ ] Port/run t0000-t0005 (initialization)

@@ -424,6 +424,32 @@ impl TupDb {
         }
     }
 
+    /// Check if all flag lists are empty (no pending work).
+    ///
+    /// Returns true when create_list, modify_list, config_list, variant_list,
+    /// and transient_list are all empty. Used by `tup flags_exists`.
+    pub fn flags_empty(&self) -> DbResult<bool> {
+        for table in &["create_list", "modify_list", "config_list", "variant_list", "transient_list"] {
+            let count: i64 = self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table}"),
+                [],
+                |row| row.get(0),
+            )?;
+            if count > 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Clear all flag lists (after a successful update cycle).
+    pub fn flags_clear_all(&self) -> DbResult<()> {
+        for table in &["create_list", "modify_list", "config_list", "variant_list", "transient_list"] {
+            self.conn.execute(&format!("DELETE FROM {table}"), [])?;
+        }
+        Ok(())
+    }
+
     /// Get all node IDs in a flag list.
     pub fn flag_list(&self, flag: tup_types::TupFlags) -> DbResult<Vec<TupId>> {
         let table = match flag.table_name() {
