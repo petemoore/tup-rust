@@ -256,7 +256,7 @@ Each PR is a self-contained, testable unit of work.
   - Working directory management
   - Tests: run commands through server
 
-- [ ] **PR #39: LD_PRELOAD dependency tracking**
+- [x] **PR #39: LD_PRELOAD dependency tracking**
   - Build the C ldpreload shared library via `cc` crate
   - Inject into child processes
   - Parse dependency reports
