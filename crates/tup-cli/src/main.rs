@@ -32,6 +32,10 @@ enum Commands {
         /// Keep going after errors
         #[arg(short, long)]
         keep_going: bool,
+
+        /// Number of parallel jobs
+        #[arg(short, long)]
+        jobs: Option<usize>,
     },
     /// Display tup configuration options
     Options,
@@ -59,8 +63,8 @@ fn main() {
         Some(Commands::Init { directory, no_sync, force }) => {
             cmd_init(directory, no_sync, force)
         }
-        Some(Commands::Upd { keep_going }) => cmd_upd(keep_going),
-        None => cmd_upd(false),
+        Some(Commands::Upd { keep_going, jobs }) => cmd_upd(keep_going, jobs),
+        None => cmd_upd(false, None),
         Some(Commands::Parse) => cmd_parse(),
         Some(Commands::Version) => {
             cmd_version();
@@ -104,7 +108,7 @@ fn cmd_init(directory: Option<PathBuf>, no_sync: bool, force: bool) -> anyhow::R
     }
 }
 
-fn cmd_upd(keep_going: bool) -> anyhow::Result<()> {
+fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
     // Find the tup root
@@ -134,8 +138,17 @@ fn cmd_upd(keep_going: bool) -> anyhow::Result<()> {
     let mut updater = tup_updater::Updater::new(&cwd);
     updater.set_keep_going(keep_going);
 
-    let results = updater.execute_rules(&rules)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let num_jobs = jobs.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
+
+    let results = if num_jobs > 1 {
+        updater.execute_rules_parallel(&rules, num_jobs)
+    } else {
+        updater.execute_rules(&rules)
+    }.map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Check for missing outputs
     let missing = updater.verify_outputs(&results);

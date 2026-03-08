@@ -4,12 +4,14 @@
 // includes, and bang macros.
 
 mod errors;
+mod glob;
 mod lexer;
 mod percent;
 mod rule;
 mod vardb;
 
 pub use errors::ParseError;
+pub use glob::{expand_globs, is_glob};
 pub use lexer::TupfileReader;
 pub use percent::{expand_output_pattern, expand_percent, InputFile};
 pub use rule::{Rule, RuleCommand};

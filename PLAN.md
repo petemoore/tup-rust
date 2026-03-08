@@ -171,7 +171,7 @@ Each PR is a self-contained, testable unit of work.
   - `ifeq`/`ifneq`
   - Tests: conditional compilation scenarios
 
-- [ ] **PR #26: Globbing and path resolution**
+- [x] **PR #26: Globbing and path resolution**
   - Glob patterns in inputs (`*.c`)
   - Recursive globbing
   - Exclusion patterns
@@ -204,7 +204,7 @@ Each PR is a self-contained, testable unit of work.
   - Exit code handling
   - Tests: build simple projects
 
-- [ ] **PR #31: Parallel execution**
+- [x] **PR #31: Parallel execution**
   - Worker thread pool
   - Job scheduling from DAG
   - `-j N` parallelism option
