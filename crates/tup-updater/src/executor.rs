@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use tup_parser::{expand_output_pattern, expand_percent, InputFile, Rule};
+use tup_parser::{expand_globs, expand_output_pattern, expand_percent, InputFile, Rule};
 
 /// Result of executing a single command.
 #[derive(Debug)]
@@ -70,9 +71,13 @@ impl Updater {
     pub fn execute_rule(&mut self, rule: &Rule) -> Result<Vec<CommandResult>, String> {
         let mut results = Vec::new();
 
+        // Expand glob patterns in inputs
+        let expanded_inputs = expand_globs(&rule.inputs, &self.work_dir)
+            .map_err(|e| format!("glob expansion failed: {e}"))?;
+
         if rule.foreach {
             // Execute once per input
-            for input_str in &rule.inputs {
+            for input_str in &expanded_inputs {
                 let input = InputFile::new(input_str);
 
                 // Expand output patterns for this input
@@ -98,7 +103,7 @@ impl Updater {
             }
         } else {
             // Execute once with all inputs
-            let inputs: Vec<InputFile> = rule.inputs.iter()
+            let inputs: Vec<InputFile> = expanded_inputs.iter()
                 .map(|s| InputFile::new(s))
                 .collect();
 
@@ -237,6 +242,144 @@ impl Updater {
             }
         }
         missing
+    }
+
+    /// Execute independent commands in parallel using a thread pool.
+    ///
+    /// `num_jobs` controls the maximum number of concurrent commands.
+    /// Each command result is collected in completion order.
+    pub fn execute_rules_parallel(
+        &mut self,
+        rules: &[Rule],
+        num_jobs: usize,
+    ) -> Result<Vec<CommandResult>, String> {
+        let num_jobs = num_jobs.max(1);
+
+        // For single job, just use sequential execution
+        if num_jobs == 1 {
+            return self.execute_rules(rules);
+        }
+
+        // Expand all rules into individual commands first
+        let mut commands: Vec<(String, Option<String>, Vec<String>)> = Vec::new();
+
+        for rule in rules {
+            let expanded_inputs = expand_globs(&rule.inputs, &self.work_dir)
+                .map_err(|e| format!("glob expansion failed: {e}"))?;
+
+            if rule.foreach {
+                for input_str in &expanded_inputs {
+                    let input = InputFile::new(input_str);
+                    let outputs: Vec<String> = rule.outputs.iter()
+                        .map(|pat| expand_output_pattern(pat, &input))
+                        .collect();
+                    let cmd = expand_percent(
+                        &rule.command.command, &[input], &outputs,
+                        &rule.order_only_inputs, &self.dir_name(),
+                    );
+                    commands.push((cmd, rule.command.display.clone(), outputs));
+                }
+            } else {
+                let inputs: Vec<InputFile> = expanded_inputs.iter()
+                    .map(|s| InputFile::new(s))
+                    .collect();
+                let outputs: Vec<String> = if !inputs.is_empty() {
+                    rule.outputs.iter()
+                        .map(|pat| {
+                            if pat.contains('%') {
+                                inputs.first().map(|f| expand_output_pattern(pat, f))
+                                    .unwrap_or_else(|| pat.clone())
+                            } else { pat.clone() }
+                        }).collect()
+                } else { rule.outputs.clone() };
+                let cmd = expand_percent(
+                    &rule.command.command, &inputs, &outputs,
+                    &rule.order_only_inputs, &self.dir_name(),
+                );
+                commands.push((cmd, rule.command.display.clone(), outputs));
+            }
+        }
+
+        let total = commands.len();
+        let results = Arc::new(Mutex::new(Vec::with_capacity(total)));
+        let work_dir = self.work_dir.clone();
+        let counter = Arc::new(Mutex::new(0usize));
+
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            let chunks: Vec<_> = commands.chunks(
+                commands.len().div_ceil(num_jobs)
+            ).collect();
+
+            for chunk in chunks {
+                let results = Arc::clone(&results);
+                let counter = Arc::clone(&counter);
+                let work_dir = work_dir.clone();
+                let chunk: Vec<_> = chunk.to_vec();
+
+                handles.push(s.spawn(move || {
+                    for (cmd, display, outputs) in chunk {
+                        let mut num = counter.lock().unwrap();
+                        *num += 1;
+                        let n = *num;
+                        drop(num);
+
+                        if let Some(ref d) = display {
+                            eprintln!(" [{n}/{total}] {d}");
+                        } else {
+                            eprintln!(" [{n}/{total}] {cmd}");
+                        }
+
+                        let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
+                        let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+                        let start = Instant::now();
+
+                        let output = Command::new(shell)
+                            .arg(flag).arg(&cmd)
+                            .current_dir(&work_dir)
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .output();
+
+                        let duration = start.elapsed();
+
+                        let result = match output {
+                            Ok(o) => CommandResult {
+                                command: cmd,
+                                display,
+                                success: o.status.success(),
+                                exit_code: o.status.code(),
+                                stdout: String::from_utf8_lossy(&o.stdout).to_string(),
+                                stderr: String::from_utf8_lossy(&o.stderr).to_string(),
+                                duration_ms: duration.as_millis() as u64,
+                                expected_outputs: outputs,
+                            },
+                            Err(e) => CommandResult {
+                                command: cmd,
+                                display,
+                                success: false,
+                                exit_code: None,
+                                stdout: String::new(),
+                                stderr: e.to_string(),
+                                duration_ms: duration.as_millis() as u64,
+                                expected_outputs: outputs,
+                            },
+                        };
+
+                        results.lock().unwrap().push(result);
+                    }
+                }));
+            }
+
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+
+        let final_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+        self.commands_run = final_results.len();
+        self.commands_failed = final_results.iter().filter(|r| !r.success).count();
+        Ok(final_results)
     }
 }
 
@@ -483,5 +626,93 @@ mod tests {
         updater.execute_rules(&rules).unwrap();
         assert_eq!(updater.commands_run(), 2);
         assert_eq!(updater.commands_failed(), 0);
+    }
+
+    #[test]
+    fn test_glob_expansion_foreach() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "aaa").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "bbb").unwrap();
+        std::fs::write(tmp.path().join("c.dat"), "ccc").unwrap();
+
+        let mut updater = Updater::new(tmp.path());
+        let rule = make_foreach_rule(&["*.txt"], "cp %f %o", "%B.out");
+        let results = updater.execute_rule(&rule).unwrap();
+
+        // Should only match .txt files, not .dat
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.success));
+        assert!(tmp.path().join("a.out").exists());
+        assert!(tmp.path().join("b.out").exists());
+        assert!(!tmp.path().join("c.out").exists());
+    }
+
+    #[test]
+    fn test_glob_expansion_non_foreach() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("x.c"), "").unwrap();
+        std::fs::write(tmp.path().join("y.c"), "").unwrap();
+
+        let mut updater = Updater::new(tmp.path());
+        let rule = make_rule(&["*.c"], "echo %f > %o", &["files.txt"]);
+        let results = updater.execute_rule(&rule).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+        let content = std::fs::read_to_string(tmp.path().join("files.txt")).unwrap();
+        assert!(content.contains("x.c"));
+        assert!(content.contains("y.c"));
+    }
+
+    #[test]
+    fn test_parallel_execution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut updater = Updater::new(tmp.path());
+
+        let rules = vec![
+            make_rule(&[], "echo 1 > one.txt", &["one.txt"]),
+            make_rule(&[], "echo 2 > two.txt", &["two.txt"]),
+            make_rule(&[], "echo 3 > three.txt", &["three.txt"]),
+            make_rule(&[], "echo 4 > four.txt", &["four.txt"]),
+        ];
+
+        let results = updater.execute_rules_parallel(&rules, 4).unwrap();
+        assert_eq!(results.len(), 4);
+        assert!(results.iter().all(|r| r.success));
+        assert!(tmp.path().join("one.txt").exists());
+        assert!(tmp.path().join("two.txt").exists());
+        assert!(tmp.path().join("three.txt").exists());
+        assert!(tmp.path().join("four.txt").exists());
+    }
+
+    #[test]
+    fn test_parallel_single_job_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut updater = Updater::new(tmp.path());
+
+        let rules = vec![
+            make_rule(&[], "echo ok > out.txt", &["out.txt"]),
+        ];
+
+        let results = updater.execute_rules_parallel(&rules, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+    }
+
+    #[test]
+    fn test_parallel_with_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut updater = Updater::new(tmp.path());
+        updater.set_keep_going(true);
+
+        let rules = vec![
+            make_rule(&[], "true", &[]),
+            make_rule(&[], "false", &[]),
+            make_rule(&[], "true", &[]),
+        ];
+
+        let results = updater.execute_rules_parallel(&rules, 2).unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(updater.commands_failed(), 1);
     }
 }
