@@ -259,6 +259,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
                 tup_db::RuleToStore {
                     command: r.command.command.clone(),
                     inputs: r.inputs.clone(),
+                    order_only_inputs: r.order_only_inputs.clone(),
                     outputs: r.outputs.clone(),
                     display: r.command.display.clone(),
                     flags: r.command.flags.clone(),
@@ -588,6 +589,7 @@ fn cmd_parse() -> anyhow::Result<()> {
             tup_db::RuleToStore {
                 command: r.command.command.clone(),
                 inputs: r.inputs.clone(),
+                order_only_inputs: r.order_only_inputs.clone(),
                 outputs: r.outputs.clone(),
                 display: r.command.display.clone(),
                 flags: r.command.flags.clone(),
