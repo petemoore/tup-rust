@@ -216,7 +216,7 @@ Each PR is a self-contained, testable unit of work.
   - Build summary
   - Tests: progress output format
 
-- [ ] **PR #33: Error handling and partial builds**
+- [x] **PR #33: Error handling and partial builds**
   - Build failure handling
   - `--keep-going` support
   - Partial update rollback
@@ -235,7 +235,7 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 7: File Scanning (`tup-monitor` / `tup scan`)
 
-- [ ] **PR #36: Filesystem scanner**
+- [x] **PR #36: Filesystem scanner**
   - Full directory tree scan
   - Compare filesystem state to DB
   - Flag changed/new/deleted files

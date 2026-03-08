@@ -36,6 +36,10 @@ pub struct Updater {
     commands_run: usize,
     /// Number of commands that failed.
     commands_failed: usize,
+    /// Total expected commands (set before execution for progress).
+    total_expected: usize,
+    /// Whether to show error output inline.
+    show_errors: bool,
 }
 
 impl Updater {
@@ -46,6 +50,8 @@ impl Updater {
             keep_going: false,
             commands_run: 0,
             commands_failed: 0,
+            total_expected: 0,
+            show_errors: true,
         }
     }
 
@@ -150,10 +156,11 @@ impl Updater {
         self.commands_run += 1;
 
         // Show what we're doing
+        let total = if self.total_expected > 0 { self.total_expected } else { self.commands_run };
         if let Some(disp) = display {
-            eprintln!(" [{}/{}] {}", self.commands_run, self.commands_run, disp);
+            eprintln!(" [{}/{}] {}", self.commands_run, total, disp);
         } else {
-            eprintln!(" [{}/{}] {}", self.commands_run, self.commands_run, cmd);
+            eprintln!(" [{}/{}] {}", self.commands_run, total, cmd);
         }
 
         let start = Instant::now();
@@ -183,6 +190,21 @@ impl Updater {
 
         if !success {
             self.commands_failed += 1;
+            if self.show_errors {
+                let stderr_text = String::from_utf8_lossy(&output.stderr);
+                let stdout_text = String::from_utf8_lossy(&output.stdout);
+                if !stderr_text.trim().is_empty() {
+                    eprintln!("{}", stderr_text.trim());
+                }
+                if !stdout_text.trim().is_empty() {
+                    eprintln!("{}", stdout_text.trim());
+                }
+                if let Some(code) = output.status.code() {
+                    eprintln!(" *** Command failed with exit code {code}");
+                } else {
+                    eprintln!(" *** Command was killed by signal");
+                }
+            }
         }
 
         Ok(CommandResult {
@@ -209,6 +231,7 @@ impl Updater {
     ///
     /// Returns all command results in execution order.
     pub fn execute_rules(&mut self, rules: &[Rule]) -> Result<Vec<CommandResult>, String> {
+        self.total_expected = rules.len();
         let mut all_results = Vec::new();
 
         for rule in rules {

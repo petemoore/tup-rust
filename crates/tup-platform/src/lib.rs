@@ -3,3 +3,4 @@
 pub mod init;
 pub mod options;
 pub mod platform;
+pub mod scanner;
