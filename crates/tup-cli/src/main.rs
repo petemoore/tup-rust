@@ -689,6 +689,21 @@ fn expand_rules_for_dir(
             &rule.inputs, work_dir, &declared_outputs,
         )?;
 
+        // Check for missing explicit inputs (non-glob, non-declared)
+        // Matches C tup parser.c:2746-2757: "Explicitly named file not found"
+        for input in &rule.inputs {
+            if !tup_parser::is_glob(input) && !input.is_empty() {
+                let on_disk = work_dir.join(input).exists();
+                let in_declared = declared_outputs.contains(input);
+                if !on_disk && !in_declared {
+                    return Err(anyhow::anyhow!(
+                        "tup error: Explicitly named file '{}' not found",
+                        input
+                    ));
+                }
+            }
+        }
+
         if rule.foreach {
             // Expand foreach: one rule per input file
             for input_path in &matched_inputs {
@@ -783,6 +798,22 @@ fn expand_rules_for_dir(
                 extra_outputs: rule.extra_outputs.clone(),
                 line_number: rule.line_number,
             });
+        }
+    }
+
+    // Check for duplicate outputs across all expanded rules
+    // Matches C tup parser.c:3187-3191: "Unable to create output file because
+    // it is already owned by command"
+    let mut seen_outputs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for rule in &expanded {
+        for output in &rule.outputs {
+            if let Some(prev_cmd) = seen_outputs.get(output) {
+                return Err(anyhow::anyhow!(
+                    "tup error: Unable to create output file '{}' in '{}' because it is already owned by '{}'",
+                    output, rule.command.command, prev_cmd,
+                ));
+            }
+            seen_outputs.insert(output.clone(), rule.command.command.clone());
         }
     }
 
