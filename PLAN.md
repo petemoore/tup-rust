@@ -158,7 +158,7 @@ Each PR is a self-contained, testable unit of work.
   - Append operator (`+=`)
   - Tests: variable substitution scenarios
 
-- [ ] **PR #24: Special variables and patterns**
+- [x] **PR #24: Special variables and patterns**
   - `%f`, `%b`, `%B`, `%e`, `%d`, `%o`, `%g` substitution
   - `foreach` rules
   - Ordered/unordered outputs
