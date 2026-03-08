@@ -1,0 +1,347 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+use tup_types::{LinkType, NodeType, TupFlags, TupId};
+
+use crate::entry::{EntryCache, TupEntry};
+use crate::error::DbResult;
+use crate::schema::TupDb;
+
+/// A command stored in the database, with its inputs and outputs.
+#[derive(Debug)]
+pub struct StoredCommand {
+    /// TupId of the CMD node.
+    pub cmd_id: TupId,
+    /// The command string (stored as the node name).
+    pub command: String,
+    /// Display string (optional).
+    pub display: Option<String>,
+    /// Flags string (optional).
+    pub flags: Option<String>,
+    /// Directory this command runs in.
+    pub dir_id: TupId,
+}
+
+/// A parsed rule ready to be stored in the database.
+#[derive(Debug, Clone)]
+pub struct RuleToStore {
+    pub command: String,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    pub display: Option<String>,
+    pub flags: Option<String>,
+}
+
+/// Store parsed rules into the database as CMD nodes with links.
+///
+/// For each rule:
+/// 1. Create or find a CMD node (keyed by command hash)
+/// 2. Create or find output FILE/GENERATED nodes
+/// 3. Create normal links: input → CMD, CMD → output
+/// 4. Flag the CMD as MODIFY if it's new or changed
+///
+/// Returns the list of stored commands.
+pub fn store_rules(
+    db: &TupDb,
+    cache: &mut EntryCache,
+    dir_id: TupId,
+    rules: &[RuleToStore],
+) -> DbResult<Vec<StoredCommand>> {
+    let mut stored = Vec::new();
+
+    for rule in rules {
+        let RuleToStore { command, inputs, outputs, display, flags } = rule;
+        // Create a unique name for the CMD node using command hash
+        let cmd_name = command_node_name(command, dir_id);
+
+        // Create or find the CMD node
+        let existing = db.node_select(dir_id, &cmd_name)?;
+        let cmd_id = match existing {
+            Some(row) if row.node_type == NodeType::Cmd => {
+                // Command exists — check if it changed
+                let old_display = row.display.as_deref();
+                let old_flags = row.flags.as_deref();
+                let new_display = display.as_deref();
+                let new_flags = flags.as_deref();
+
+                if old_display != new_display || old_flags != new_flags {
+                    db.node_set_display(row.id, new_display)?;
+                    db.node_set_flags(row.id, new_flags)?;
+                    db.flag_add(row.id, TupFlags::Modify)?;
+                }
+                row.id
+            }
+            Some(row) if row.node_type == NodeType::Ghost => {
+                // Ghost → CMD
+                db.node_set_type(row.id, NodeType::Cmd)?;
+                db.node_set_display(row.id, display.as_deref())?;
+                db.node_set_flags(row.id, flags.as_deref())?;
+                db.flag_add(row.id, TupFlags::Modify)?;
+                cache.change_type(row.id, NodeType::Cmd);
+                row.id
+            }
+            Some(_) => {
+                // Type conflict — skip
+                continue;
+            }
+            None => {
+                // New command
+                let id = db.node_insert(
+                    dir_id,
+                    &cmd_name,
+                    NodeType::Cmd,
+                    -1, 0, -1,
+                    display.as_deref(),
+                    flags.as_deref(),
+                )?;
+                db.flag_add(id, TupFlags::Modify)?;
+
+                if let Some(row) = db.node_select_by_id(id)? {
+                    cache.add(TupEntry::from_node_row(&row));
+                }
+                id
+            }
+        };
+
+        // Create links for inputs: input_node → CMD
+        for input_name in inputs {
+            if let Some(input_node) = db.node_select(dir_id, input_name)? {
+                db.link_insert(input_node.id, cmd_id, LinkType::Normal)?;
+            }
+            // If input doesn't exist in DB, it might be from another
+            // directory or not yet scanned — will be resolved later
+        }
+
+        // Create output nodes and links: CMD → output_node
+        for output_name in outputs {
+            let output_id = match db.node_select(dir_id, output_name)? {
+                Some(row) => {
+                    // Update to Generated type if needed
+                    if row.node_type != NodeType::Generated && row.node_type != NodeType::Ghost {
+                        // Already exists as a different type — may be a source
+                        // file being overwritten. For now, skip the link.
+                        continue;
+                    }
+                    if row.node_type == NodeType::Ghost {
+                        db.node_set_type(row.id, NodeType::Generated)?;
+                    }
+                    row.id
+                }
+                None => {
+                    // Create new Generated node
+                    db.node_insert(
+                        dir_id,
+                        output_name,
+                        NodeType::Generated,
+                        -1, 0, cmd_id.raw(),
+                        None, None,
+                    )?
+                }
+            };
+            db.link_insert(cmd_id, output_id, LinkType::Normal)?;
+        }
+
+        stored.push(StoredCommand {
+            cmd_id,
+            command: command.clone(),
+            display: display.clone(),
+            flags: flags.clone(),
+            dir_id,
+        });
+    }
+
+    Ok(stored)
+}
+
+/// Get all commands in the modify list (need re-execution).
+pub fn get_modified_commands(db: &TupDb) -> DbResult<Vec<TupId>> {
+    let modify_ids = db.flag_list(TupFlags::Modify)?;
+    let mut cmd_ids = Vec::new();
+
+    for id in modify_ids {
+        if let Some(row) = db.node_select_by_id(id)? {
+            if row.node_type == NodeType::Cmd {
+                cmd_ids.push(id);
+            }
+        }
+    }
+
+    Ok(cmd_ids)
+}
+
+/// Clear the modify flag for a command after successful execution.
+pub fn mark_command_done(db: &TupDb, cmd_id: TupId) -> DbResult<()> {
+    db.flag_remove(cmd_id, TupFlags::Modify)?;
+    Ok(())
+}
+
+/// Generate a unique node name for a command.
+///
+/// Uses a hash to create a short, unique identifier.
+fn command_node_name(command: &str, dir_id: TupId) -> String {
+    let mut hasher = DefaultHasher::new();
+    command.hash(&mut hasher);
+    dir_id.raw().hash(&mut hasher);
+    let hash = hasher.finish();
+    format!("cmd:{:016x}", hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup() -> (TupDb, EntryCache) {
+        let db = TupDb::create_in_memory().unwrap();
+        let mut cache = EntryCache::new();
+        cache.load(&db, tup_types::DOT_DT).unwrap();
+        (db, cache)
+    }
+
+    #[test]
+    fn test_store_simple_rule() {
+        let (db, mut cache) = setup();
+        db.begin().unwrap();
+
+        // Create an input file first
+        db.node_insert(
+            tup_types::DOT_DT, "main.c", NodeType::File,
+            1000, 0, -1, None, None,
+        ).unwrap();
+
+        let rules = vec![RuleToStore {
+            command: "gcc -c main.c -o main.o".to_string(),
+            inputs: vec!["main.c".to_string()],
+            outputs: vec!["main.o".to_string()],
+            display: Some("CC main.c".to_string()),
+            flags: None,
+        }];
+
+        let stored = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
+        assert_eq!(stored.len(), 1);
+
+        // CMD should exist in DB
+        let cmd = db.node_select_by_id(stored[0].cmd_id).unwrap().unwrap();
+        assert_eq!(cmd.node_type, NodeType::Cmd);
+        assert_eq!(cmd.display, Some("CC main.c".to_string()));
+
+        // CMD should be in modify list
+        assert!(db.flag_check(stored[0].cmd_id, TupFlags::Modify).unwrap());
+
+        // Output should exist as Generated
+        let output = db.node_select(tup_types::DOT_DT, "main.o").unwrap().unwrap();
+        assert_eq!(output.node_type, NodeType::Generated);
+
+        // Links should exist
+        assert!(db.link_exists(
+            db.node_select(tup_types::DOT_DT, "main.c").unwrap().unwrap().id,
+            stored[0].cmd_id,
+            LinkType::Normal,
+        ).unwrap());
+
+        db.commit().unwrap();
+    }
+
+    #[test]
+    fn test_store_same_rule_twice() {
+        let (db, mut cache) = setup();
+        db.begin().unwrap();
+
+        let rules = vec![RuleToStore {
+            command: "echo hello".to_string(),
+            inputs: vec![],
+            outputs: vec!["out.txt".to_string()],
+            display: None,
+            flags: None,
+        }];
+
+        let stored1 = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
+        // Clear modify flag
+        mark_command_done(&db, stored1[0].cmd_id).unwrap();
+
+        // Store same rule again — should not re-flag
+        let stored2 = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
+        assert_eq!(stored1[0].cmd_id, stored2[0].cmd_id);
+        assert!(!db.flag_check(stored2[0].cmd_id, TupFlags::Modify).unwrap());
+
+        db.commit().unwrap();
+    }
+
+    #[test]
+    fn test_store_changed_display() {
+        let (db, mut cache) = setup();
+        db.begin().unwrap();
+
+        let rules1 = vec![RuleToStore {
+            command: "gcc -c foo.c".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            display: Some("CC foo.c".to_string()),
+            flags: None,
+        }];
+        let stored1 = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules1).unwrap();
+        mark_command_done(&db, stored1[0].cmd_id).unwrap();
+
+        // Change display string
+        let rules2 = vec![RuleToStore {
+            command: "gcc -c foo.c".to_string(),
+            inputs: vec![],
+            outputs: vec![],
+            display: Some("COMPILE foo.c".to_string()),
+            flags: None,
+        }];
+        let stored2 = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules2).unwrap();
+
+        // Should be re-flagged due to display change
+        assert!(db.flag_check(stored2[0].cmd_id, TupFlags::Modify).unwrap());
+
+        db.commit().unwrap();
+    }
+
+    #[test]
+    fn test_get_modified_commands() {
+        let (db, mut cache) = setup();
+        db.begin().unwrap();
+
+        let rules = vec![
+            RuleToStore { command: "cmd1".to_string(), inputs: vec![], outputs: vec![], display: None, flags: None },
+            RuleToStore { command: "cmd2".to_string(), inputs: vec![], outputs: vec![], display: None, flags: None },
+        ];
+        store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
+
+        let modified = get_modified_commands(&db).unwrap();
+        assert_eq!(modified.len(), 2);
+
+        db.commit().unwrap();
+    }
+
+    #[test]
+    fn test_mark_command_done() {
+        let (db, mut cache) = setup();
+        db.begin().unwrap();
+
+        let rules = vec![RuleToStore {
+            command: "test cmd".to_string(), inputs: vec![], outputs: vec![], display: None, flags: None,
+        }];
+        let stored = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
+
+        assert!(db.flag_check(stored[0].cmd_id, TupFlags::Modify).unwrap());
+        mark_command_done(&db, stored[0].cmd_id).unwrap();
+        assert!(!db.flag_check(stored[0].cmd_id, TupFlags::Modify).unwrap());
+
+        db.commit().unwrap();
+    }
+
+    #[test]
+    fn test_command_node_name_deterministic() {
+        let n1 = command_node_name("gcc -c foo.c", TupId::new(1));
+        let n2 = command_node_name("gcc -c foo.c", TupId::new(1));
+        assert_eq!(n1, n2);
+    }
+
+    #[test]
+    fn test_command_node_name_different() {
+        let n1 = command_node_name("gcc -c foo.c", TupId::new(1));
+        let n2 = command_node_name("gcc -c bar.c", TupId::new(1));
+        assert_ne!(n1, n2);
+    }
+}
