@@ -79,7 +79,7 @@ Each PR is a self-contained, testable unit of work.
   - Default option values
   - Tests: config file parsing, option overrides
 
-- [ ] **PR #12: Variant support**
+- [x] **PR #12: Variant support**
   - Variant directory detection
   - Per-variant config
   - Variant creation and listing
@@ -125,13 +125,13 @@ Each PR is a self-contained, testable unit of work.
   - Terminal colors
   - Tests: platform detection on current OS
 
-- [ ] **PR #19: File utilities**
+- [x] **PR #19: File utilities**
   - `fslurp` → file reading
   - Environment manipulation
   - Debug and logging setup
   - Tests: file reading, env manipulation
 
-- [ ] **PR #20: File locking**
+- [x] **PR #20: File locking**
   - Database file locking (flock)
   - Lock acquisition and release
   - Lock contention handling

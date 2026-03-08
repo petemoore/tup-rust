@@ -9,6 +9,7 @@ description = "Platform abstraction layer for tup build system"
 tup-types = { path = "../tup-types" }
 tup-db = { path = "../tup-db" }
 anyhow = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
