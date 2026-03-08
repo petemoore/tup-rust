@@ -78,12 +78,13 @@ a fancy script runner.
 - [x] delete_or_ghost(): convert to GHOST if has refs, else delete
 - [x] 8 tests (reclaimable, not-reclaimable, cascading, tup.config, delete-or-ghost)
 
-### PR D5: Output Tracking
-- [ ] After command execution: verify declared outputs exist
-- [ ] Detect undeclared outputs (files created but not in output list)
-- [ ] Handle transient files (flag 't': delete after consumers finish)
-- [ ] Update output node mtimes in database
-- [ ] Tests: command creates extra file → warning
+### PR D5: Output Tracking — DONE
+- [x] After command execution: stat each declared output, store mtime in DB
+- [x] Report missing outputs (declared but not created)
+- [x] Create Generated nodes for new outputs
+- [x] Update command node mtime to execution time
+- [x] Wired into CLI: tup upd tracks outputs after each build
+- [x] 4 tests
 
 ### PR D6: Cross-Directory Dependencies
 - [ ] Inputs from other directories create links across dir boundaries

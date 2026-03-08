@@ -258,14 +258,42 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
         }
     }
 
-    // Clear modify flags for successful commands
+    // Post-execution: update output mtimes and clear modify flags
+    db.begin()?;
     if total_failed == 0 {
-        db.begin()?;
+        // Track output mtimes for each stored command
+        for tupfile_rel in &tupfiles {
+            let tupfile_path = tup_root.join(tupfile_rel);
+            let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
+            let dir_rel = tupfile_dir.strip_prefix(&tup_root).unwrap_or(Path::new(""));
+
+            if let Ok(dir_id) = resolve_dir_id(&db, dir_rel) {
+                let filename = tupfile_rel.to_string_lossy();
+                if let Ok(rules) = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename) {
+                    for rule in &rules {
+                        // Find the CMD node for this rule
+                        if let Ok(Some(cmd_row)) = db.node_select(dir_id, &rule.command.command) {
+                            if cmd_row.node_type == tup_types::NodeType::Cmd {
+                                let track_result = tup_db::track_outputs(
+                                    &db, cmd_row.id, dir_id,
+                                    &rule.outputs, tupfile_dir,
+                                )?;
+                                for missing in &track_result.missing {
+                                    eprintln!("tup warning: expected output '{}' was not created", missing);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clear modify flags
         for cmd_id in &modified_cmds {
             tup_db::mark_command_done(&db, *cmd_id)?;
         }
-        db.commit()?;
     }
+    db.commit()?;
 
     // Summary
     if total_failed > 0 {
