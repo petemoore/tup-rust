@@ -93,13 +93,13 @@ Each PR is a self-contained, testable unit of work.
   - Edge creation and traversal
   - Tests: build graph, verify structure
 
-- [ ] **PR #14: Topological sort and traversal**
+- [x] **PR #14: Topological sort and traversal** (completed in PR #13)
   - Topological ordering of DAG
   - BFS/DFS traversal
   - Parallel-ready traversal (identify independent nodes)
   - Tests: sort ordering, parallel groups
 
-- [ ] **PR #15: Cycle detection**
+- [x] **PR #15: Cycle detection** (completed in PR #13)
   - Circular dependency detection
   - Group-based cycle checking
   - Error reporting with cycle path
@@ -119,7 +119,7 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 4: Platform Layer (`tup-platform`)
 
-- [ ] **PR #18: Platform detection and abstractions**
+- [x] **PR #18: Platform detection and abstractions**
   - OS detection (Linux, macOS, Windows)
   - Platform-specific path handling
   - Terminal colors
@@ -137,7 +137,7 @@ Each PR is a self-contained, testable unit of work.
   - Lock contention handling
   - Tests: concurrent lock attempts
 
-- [ ] **PR #21: Project initialization (`tup init`)**
+- [x] **PR #21: Project initialization (`tup init`)**
   - Create `.tup/` directory structure
   - Initialize database
   - First working CLI command
