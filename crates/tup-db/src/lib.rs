@@ -8,8 +8,10 @@ mod error;
 mod link_ops;
 mod node_ops;
 mod schema;
+mod vardb;
 
 pub use entry::{EntryCache, TupEntry};
 pub use error::DbError;
 pub use node_ops::CreateResult;
 pub use schema::{NodeRow, TupDb};
+pub use vardb::{VarDb, VarEntry};
