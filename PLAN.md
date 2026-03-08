@@ -87,7 +87,7 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 3: Graph Engine (`tup-graph`)
 
-- [ ] **PR #13: Graph data structures**
+- [x] **PR #13: Graph data structures**
   - `Node`, `Edge`, `Graph` structs
   - Node state machine (INITIALIZED → PROCESSING → FINISHED)
   - Edge creation and traversal
