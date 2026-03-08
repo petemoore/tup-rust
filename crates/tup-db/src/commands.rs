@@ -24,6 +24,11 @@ pub struct StoredCommand {
 pub struct RuleToStore {
     pub command: String,
     pub inputs: Vec<String>,
+    /// Order-only inputs (after `|` in input section).
+    /// FILE-type order-only inputs get NORMAL links (not STICKY).
+    /// GENERATED-type order-only inputs get STICKY links.
+    /// Matches C tup's add_input() with force_normal_file parameter.
+    pub order_only_inputs: Vec<String>,
     pub outputs: Vec<String>,
     pub display: Option<String>,
     pub flags: Option<String>,
@@ -47,7 +52,7 @@ pub fn store_rules(
     let mut stored = Vec::new();
 
     for rule in rules {
-        let RuleToStore { command, inputs, outputs, display, flags } = rule;
+        let RuleToStore { command, inputs, order_only_inputs: _, outputs, display, flags } = rule;
         // In C tup, the command name IS the full command string.
         // UNIQUE(dir, name) deduplicates same command in same directory.
         let cmd_name = command_node_name(command);
@@ -101,15 +106,30 @@ pub fn store_rules(
             }
         };
 
-        // Create links for inputs: input_node → CMD
-        // C tup uses STICKY links for declared inputs (from Tupfile rules)
-        // and NORMAL links for order-only inputs.
+        // Create links for regular inputs: input_node → CMD (STICKY)
+        // C tup uses STICKY links for declared inputs (from Tupfile rules).
         for input_name in inputs {
             if let Some(input_node) = db.node_select(dir_id, input_name)? {
                 db.link_insert(input_node.id, cmd_id, LinkType::Sticky)?;
             }
             // If input doesn't exist in DB, it might be from another
             // directory or not yet scanned — will be resolved later
+        }
+
+        // Create links for order-only inputs:
+        // - Generated files → STICKY link (matches C tup: generated order-only
+        //   inputs still track changes)
+        // - Regular files → NORMAL link only (C tup parser.c:3153 skips FILE
+        //   types for order-only unless they're generated)
+        for oo_name in &rule.order_only_inputs {
+            if let Some(oo_node) = db.node_select(dir_id, oo_name)? {
+                let link_type = if oo_node.node_type == NodeType::Generated {
+                    LinkType::Sticky
+                } else {
+                    LinkType::Normal
+                };
+                db.link_insert(oo_node.id, cmd_id, link_type)?;
+            }
         }
 
         // Create output nodes and links: CMD → output_node
@@ -209,6 +229,7 @@ mod tests {
         let rules = vec![RuleToStore {
             command: "gcc -c main.c -o main.o".to_string(),
             inputs: vec!["main.c".to_string()],
+            order_only_inputs: vec![],
             outputs: vec!["main.o".to_string()],
             display: Some("CC main.c".to_string()),
             flags: None,
@@ -247,6 +268,7 @@ mod tests {
         let rules = vec![RuleToStore {
             command: "echo hello".to_string(),
             inputs: vec![],
+            order_only_inputs: vec![],
             outputs: vec!["out.txt".to_string()],
             display: None,
             flags: None,
@@ -272,6 +294,7 @@ mod tests {
         let rules1 = vec![RuleToStore {
             command: "gcc -c foo.c".to_string(),
             inputs: vec![],
+            order_only_inputs: vec![],
             outputs: vec![],
             display: Some("CC foo.c".to_string()),
             flags: None,
@@ -283,6 +306,7 @@ mod tests {
         let rules2 = vec![RuleToStore {
             command: "gcc -c foo.c".to_string(),
             inputs: vec![],
+            order_only_inputs: vec![],
             outputs: vec![],
             display: Some("COMPILE foo.c".to_string()),
             flags: None,
@@ -301,8 +325,8 @@ mod tests {
         db.begin().unwrap();
 
         let rules = vec![
-            RuleToStore { command: "cmd1".to_string(), inputs: vec![], outputs: vec![], display: None, flags: None },
-            RuleToStore { command: "cmd2".to_string(), inputs: vec![], outputs: vec![], display: None, flags: None },
+            RuleToStore { command: "cmd1".to_string(), inputs: vec![], order_only_inputs: vec![], outputs: vec![], display: None, flags: None },
+            RuleToStore { command: "cmd2".to_string(), inputs: vec![], order_only_inputs: vec![], outputs: vec![], display: None, flags: None },
         ];
         store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
 
@@ -318,7 +342,7 @@ mod tests {
         db.begin().unwrap();
 
         let rules = vec![RuleToStore {
-            command: "test cmd".to_string(), inputs: vec![], outputs: vec![], display: None, flags: None,
+            command: "test cmd".to_string(), inputs: vec![], order_only_inputs: vec![], outputs: vec![], display: None, flags: None,
         }];
         let stored = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
 
