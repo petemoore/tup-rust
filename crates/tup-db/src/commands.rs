@@ -1,6 +1,3 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use tup_types::{LinkType, NodeType, TupFlags, TupId};
 
 use crate::entry::{EntryCache, TupEntry};
@@ -51,8 +48,9 @@ pub fn store_rules(
 
     for rule in rules {
         let RuleToStore { command, inputs, outputs, display, flags } = rule;
-        // Create a unique name for the CMD node using command hash
-        let cmd_name = command_node_name(command, dir_id);
+        // In C tup, the command name IS the full command string.
+        // UNIQUE(dir, name) deduplicates same command in same directory.
+        let cmd_name = command_node_name(command);
 
         // Create or find the CMD node
         let existing = db.node_select(dir_id, &cmd_name)?;
@@ -104,9 +102,11 @@ pub fn store_rules(
         };
 
         // Create links for inputs: input_node → CMD
+        // C tup uses STICKY links for declared inputs (from Tupfile rules)
+        // and NORMAL links for order-only inputs.
         for input_name in inputs {
             if let Some(input_node) = db.node_select(dir_id, input_name)? {
-                db.link_insert(input_node.id, cmd_id, LinkType::Normal)?;
+                db.link_insert(input_node.id, cmd_id, LinkType::Sticky)?;
             }
             // If input doesn't exist in DB, it might be from another
             // directory or not yet scanned — will be resolved later
@@ -175,15 +175,13 @@ pub fn mark_command_done(db: &TupDb, cmd_id: TupId) -> DbResult<()> {
     Ok(())
 }
 
-/// Generate a unique node name for a command.
+/// Get the node name for a command.
 ///
-/// Uses a hash to create a short, unique identifier.
-fn command_node_name(command: &str, dir_id: TupId) -> String {
-    let mut hasher = DefaultHasher::new();
-    command.hash(&mut hasher);
-    dir_id.raw().hash(&mut hasher);
-    let hash = hasher.finish();
-    format!("cmd:{:016x}", hash)
+/// In C tup, the command name IS the full command string.
+/// Commands in the same directory with the same string are deduplicated
+/// by the UNIQUE(dir, name) constraint.
+fn command_node_name(command: &str) -> String {
+    command.to_string()
 }
 
 #[cfg(test)]
@@ -231,11 +229,11 @@ mod tests {
         let output = db.node_select(tup_types::DOT_DT, "main.o").unwrap().unwrap();
         assert_eq!(output.node_type, NodeType::Generated);
 
-        // Links should exist
+        // Input links should be STICKY (C tup uses sticky for declared inputs)
         assert!(db.link_exists(
             db.node_select(tup_types::DOT_DT, "main.c").unwrap().unwrap().id,
             stored[0].cmd_id,
-            LinkType::Normal,
+            LinkType::Sticky,
         ).unwrap());
 
         db.commit().unwrap();
@@ -332,16 +330,16 @@ mod tests {
     }
 
     #[test]
-    fn test_command_node_name_deterministic() {
-        let n1 = command_node_name("gcc -c foo.c", TupId::new(1));
-        let n2 = command_node_name("gcc -c foo.c", TupId::new(1));
-        assert_eq!(n1, n2);
+    fn test_command_node_name_is_full_string() {
+        // C tup stores the full command string as the node name
+        let name = command_node_name("gcc -c foo.c -o foo.o");
+        assert_eq!(name, "gcc -c foo.c -o foo.o");
     }
 
     #[test]
     fn test_command_node_name_different() {
-        let n1 = command_node_name("gcc -c foo.c", TupId::new(1));
-        let n2 = command_node_name("gcc -c bar.c", TupId::new(1));
+        let n1 = command_node_name("gcc -c foo.c");
+        let n2 = command_node_name("gcc -c bar.c");
         assert_ne!(n1, n2);
     }
 }
