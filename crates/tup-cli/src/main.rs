@@ -121,7 +121,19 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
     let tup_root = tup_platform::init::find_tup_dir(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .tup directory found. Run 'tup init' first."))?;
 
-    // Find all Tupfiles in the project
+    // Phase 1: Scan filesystem and sync to database
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+    let mut cache = tup_db::EntryCache::new();
+    let sync_result = tup_db::sync_filesystem(&db, &mut cache, &tup_root)?;
+
+    if sync_result.files_added > 0 || sync_result.files_modified > 0 || sync_result.files_deleted > 0 {
+        eprintln!(
+            "[ tup ] Scan: {} new, {} modified, {} deleted",
+            sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
+        );
+    }
+
+    // Phase 2: Find all Tupfiles and parse
     let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
