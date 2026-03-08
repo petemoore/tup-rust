@@ -198,7 +198,7 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 6: Build Updater (`tup-updater`)
 
-- [ ] **PR #30: Single-threaded updater**
+- [x] **PR #30: Single-threaded updater**
   - Sequential command execution
   - Process spawning and output capture
   - Exit code handling
