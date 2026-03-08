@@ -9,9 +9,11 @@ mod link_ops;
 mod node_ops;
 mod schema;
 mod vardb;
+mod variant;
 
 pub use entry::{EntryCache, TupEntry};
 pub use error::DbError;
 pub use node_ops::CreateResult;
 pub use schema::{NodeRow, TupDb};
 pub use vardb::{VarDb, VarEntry};
+pub use variant::{parse_tup_config, Variant, VariantRegistry};
