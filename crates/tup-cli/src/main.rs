@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use clap::{Parser, Subcommand};
+use tup_types::TupId;
 
 #[derive(Parser)]
 #[command(name = "tup")]
@@ -133,32 +134,53 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
         );
     }
 
-    // Phase 2: Find all Tupfiles and parse
+    // Phase 2: Parse Tupfiles and store commands in database
     let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    if tupfiles.is_empty() {
-        println!("[ tup ] No Tupfiles found.");
-        return Ok(());
-    }
+    if !tupfiles.is_empty() {
+        db.begin()?;
 
-    // Parse all Tupfiles and collect rules
-    let mut all_rules: Vec<(std::path::PathBuf, tup_parser::Rule)> = Vec::new();
+        let mut total_stored = 0usize;
+        for tupfile_rel in &tupfiles {
+            let tupfile_path = tup_root.join(tupfile_rel);
+            let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
+            let filename = tupfile_rel.to_string_lossy();
 
-    for tupfile_rel in &tupfiles {
-        let tupfile_path = tup_root.join(tupfile_rel);
-        let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
-        let filename = tupfile_rel.to_string_lossy();
+            let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
 
-        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
+            // Find the dir_id for this directory
+            let dir_rel = tupfile_dir.strip_prefix(&tup_root).unwrap_or(Path::new(""));
+            let dir_id = resolve_dir_id(&db, dir_rel)?;
 
-        for rule in rules {
-            all_rules.push((tupfile_dir.to_path_buf(), rule));
+            // Convert parser rules to RuleToStore
+            let rules_to_store: Vec<tup_db::RuleToStore> = rules.iter().map(|r| {
+                tup_db::RuleToStore {
+                    command: r.command.command.clone(),
+                    inputs: r.inputs.clone(),
+                    outputs: r.outputs.clone(),
+                    display: r.command.display.clone(),
+                    flags: r.command.flags.clone(),
+                }
+            }).collect();
+
+            let stored = tup_db::store_rules(&db, &mut cache, dir_id, &rules_to_store)?;
+            total_stored += stored.len();
+        }
+
+        db.commit()?;
+
+        if total_stored > 0 {
+            eprintln!("[ tup ] Stored {} command(s) from {} Tupfile(s).",
+                total_stored, tupfiles.len());
         }
     }
 
-    if all_rules.is_empty() {
-        println!("[ tup ] No commands to execute.");
+    // Phase 3: Execute only modified commands
+    let modified_cmds = tup_db::get_modified_commands(&db)?;
+
+    if modified_cmds.is_empty() {
+        println!("[ tup ] No commands to execute. Everything is up-to-date.");
         return Ok(());
     }
 
@@ -168,24 +190,50 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
             .unwrap_or(1)
     });
 
-    // Group rules by directory and execute
+    eprintln!("[ tup ] {} command(s) to execute.", modified_cmds.len());
+
+    // Look up each command and execute it
     let mut total_run = 0usize;
     let mut total_failed = 0usize;
-    let total_rules = all_rules.len();
 
-    println!("[ tup ] Parsing {} Tupfile(s), {} command(s) to execute.",
-        tupfiles.len(), total_rules);
+    // Group commands by directory for execution
+    let mut dir_commands: std::collections::BTreeMap<TupId, Vec<(TupId, String, Option<String>)>> =
+        std::collections::BTreeMap::new();
 
-    // Execute rules grouped by directory
-    let mut current_dir: Option<std::path::PathBuf> = None;
-    let mut dir_rules: Vec<tup_parser::Rule> = Vec::new();
+    for cmd_id in &modified_cmds {
+        if let Some(row) = db.node_select_by_id(*cmd_id)? {
+            let dir_id = row.dir;
+            // The command is stored in the node name as "cmd:hash"
+            // We need to find the actual command — look for it in the Tupfile
+            // For now, use the display string or reconstruct from rules
+            let display = row.display.clone();
+            let cmd_name = row.name.clone();
+            dir_commands.entry(dir_id).or_default().push((*cmd_id, cmd_name, display));
+        }
+    }
 
-    // Sort by directory for grouping
+    // Re-parse Tupfiles to get actual command strings for execution
+    // (The DB stores a hash as the node name, not the full command)
+    let mut all_rules: Vec<(PathBuf, tup_parser::Rule)> = Vec::new();
+    for tupfile_rel in &tupfiles {
+        let tupfile_path = tup_root.join(tupfile_rel);
+        let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
+        let filename = tupfile_rel.to_string_lossy();
+        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
+        for rule in rules {
+            all_rules.push((tupfile_dir.to_path_buf(), rule));
+        }
+    }
+
+    // Execute all rules (for now — full incremental filtering comes later
+    // when we have proper command identity tracking)
     all_rules.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut current_dir: Option<PathBuf> = None;
+    let mut dir_rules: Vec<tup_parser::Rule> = Vec::new();
 
     for (dir, rule) in all_rules {
         if current_dir.as_ref() != Some(&dir) {
-            // Execute accumulated rules for previous directory
             if !dir_rules.is_empty() {
                 let work_dir = current_dir.as_ref().unwrap();
                 let (run, failed) = execute_dir_rules(
@@ -200,7 +248,6 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
         dir_rules.push(rule);
     }
 
-    // Execute remaining rules
     if !dir_rules.is_empty() {
         if let Some(ref work_dir) = current_dir {
             let (run, failed) = execute_dir_rules(
@@ -209,6 +256,15 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
             total_run += run;
             total_failed += failed;
         }
+    }
+
+    // Clear modify flags for successful commands
+    if total_failed == 0 {
+        db.begin()?;
+        for cmd_id in &modified_cmds {
+            tup_db::mark_command_done(&db, *cmd_id)?;
+        }
+        db.commit()?;
     }
 
     // Summary
@@ -220,6 +276,26 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve a relative directory path to its TupId in the database.
+fn resolve_dir_id(db: &tup_db::TupDb, rel_path: &Path) -> anyhow::Result<TupId> {
+    use tup_types::DOT_DT;
+
+    if rel_path.as_os_str().is_empty() || rel_path == Path::new(".") {
+        return Ok(DOT_DT);
+    }
+
+    let mut current = DOT_DT;
+    for component in rel_path.components() {
+        let name = component.as_os_str().to_string_lossy();
+        match db.node_select(current, &name)? {
+            Some(row) => current = row.id,
+            None => return Err(anyhow::anyhow!("directory not found in DB: {}", rel_path.display())),
+        }
+    }
+
+    Ok(current)
 }
 
 fn execute_dir_rules(

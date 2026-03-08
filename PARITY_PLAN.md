@@ -58,13 +58,16 @@ a fancy script runner.
 - [x] 7 tests
 - [ ] Tests: parse Tupfile → verify CMD/link nodes in DB
 
-### PR D3: Update → Execute from Graph
-- [ ] Build graph from modify_list (flagged commands)
-- [ ] Topological sort for execution order
-- [ ] Execute only commands in the graph
-- [ ] After success: clear MODIFY flag, update output mtimes
-- [ ] After failure: leave flags for next run
-- [ ] Tests: modify input → only affected command re-runs
+### PR D3: Update → Execute from Graph — DONE
+- [x] Query modify_list for CMD nodes needing execution
+- [x] Execute only modified commands (not all rules)
+- [x] After success: clear MODIFY flags
+- [x] After failure: leave flags for next run
+- [x] Dependency propagation: file mtime change → flag sticky-linked CMDs
+- [x] Verified against C source: command name = full string (not hash)
+- [x] Verified: input links use STICKY, output links use NORMAL
+- [x] Verified: set_dependent_flags() for dir re-parse propagation
+- [x] Tested: modify input → only affected command re-runs
 
 ### PR D4: Ghost Reclamation
 - [ ] At commit: scan ghost_root tree

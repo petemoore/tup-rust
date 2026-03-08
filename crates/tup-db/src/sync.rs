@@ -141,6 +141,20 @@ fn sync_dir(
                         db.flag_add(row.id, TupFlags::Modify)?;
                         result.files_modified += 1;
 
+                        // Propagate changes to dependent commands and directories.
+                        // In C tup, set_dependent_flags() flags directories for
+                        // re-parsing via normal_link. Additionally, we need to flag
+                        // commands that use this file as an input (via sticky_link)
+                        // so they get re-executed.
+                        db.set_dependent_flags(row.id)?;
+
+                        // Flag commands that have this file as a sticky input
+                        // (declared dependency from Tupfile rules)
+                        let sticky_outputs = db.get_sticky_outputs(row.id)?;
+                        for cmd_id in &sticky_outputs {
+                            db.flag_add(*cmd_id, TupFlags::Modify)?;
+                        }
+
                         // If this is a Tupfile, flag the directory
                         if is_tupfile_name(&entry.name) {
                             db.flag_add(dir_id, TupFlags::Create)?;
