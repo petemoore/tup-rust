@@ -34,7 +34,7 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 2: Database Layer (`tup-db`)
 
-- [ ] **PR #5: Database initialization and schema**
+- [x] **PR #5: Database initialization and schema**
   - SQLite database creation
   - All CREATE TABLE and CREATE INDEX statements
   - Schema migration/version checking

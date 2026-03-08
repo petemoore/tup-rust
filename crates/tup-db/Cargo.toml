@@ -10,3 +10,6 @@ tup-types = { path = "../tup-types" }
 rusqlite = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
