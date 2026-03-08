@@ -194,6 +194,7 @@ pub fn expand_output_pattern(pattern: &str, input: &InputFile) -> String {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
 
@@ -347,8 +348,8 @@ mod tests {
             let output = expand_output_pattern("%B.o", input);
             let cmd = expand_percent(
                 "gcc -c %f -o %o",
-                &[input.clone()],
-                &[output.clone()],
+                std::slice::from_ref(input),
+                std::slice::from_ref(&output),
                 &[],
                 ".",
             );

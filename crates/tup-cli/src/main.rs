@@ -79,6 +79,7 @@ fn main() {
             Ok(())
         }
         Some(Commands::Graph { dirs: _ }) => cmd_graph(),
+        Some(Commands::Scan) => cmd_scan(),
         Some(_) => {
             eprintln!("Command not yet implemented");
             Ok(())
@@ -274,6 +275,25 @@ fn cmd_parse() -> anyhow::Result<()> {
     }
 
     println!("\n{} Tupfile(s), {} rule(s) total.", tupfiles.len(), total_rules);
+    Ok(())
+}
+
+fn cmd_scan() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
+
+    let result = tup_platform::scanner::scan_directory(&tup_root)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    println!("Scan results:");
+    println!("  {} file(s) found", result.new_files.len());
+    println!("  {} directory(ies) found", result.directories.len());
+
+    let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("  {} Tupfile(s) found", tupfiles.len());
+
     Ok(())
 }
 

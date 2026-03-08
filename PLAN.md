@@ -275,13 +275,13 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 9: Integration and End-to-End Testing
 
-- [ ] **PR #42: Test framework port**
+- [x] **PR #42: Test framework port**
   - Shell test harness helpers → Rust test utilities
   - Test directory setup/teardown
   - Common assertion functions
   - Parallel test execution
 
-- [ ] **PR #43: Port t0xxx tests (initialization)**
+- [x] **PR #43: Port t0xxx tests (initialization)**
   - Tests for `tup init`, basic project setup
   - ~20-30 tests
 
@@ -313,7 +313,7 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 10: Polish and Parity
 
-- [ ] **PR #50: CLI parity**
+- [x] **PR #50: CLI parity** (partial — init, upd, parse, graph, scan, version, options)
   - All subcommands working
   - Help text
   - Exit codes matching C version
