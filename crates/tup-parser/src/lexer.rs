@@ -114,7 +114,30 @@ impl TupfileReader {
     }
 
     /// Process all parsed lines with a base directory for include resolution.
+    ///
+    /// `base_dir` is the directory containing the Tupfile (for include resolution).
+    /// `tup_root` is the tup project root (for TUP_CWD computation).
     pub fn evaluate_with_dir(&mut self, base_dir: Option<&std::path::Path>) -> Result<Vec<Rule>, ParseError> {
+        self.evaluate_with_dirs(base_dir, None)
+    }
+
+    /// Process all parsed lines with base directory and tup root for TUP_CWD.
+    pub fn evaluate_with_dirs(
+        &mut self,
+        base_dir: Option<&std::path::Path>,
+        tup_root: Option<&std::path::Path>,
+    ) -> Result<Vec<Rule>, ParseError> {
+        // Set TUP_CWD to relative path from tup root to current directory
+        if let (Some(dir), Some(root)) = (base_dir, tup_root) {
+            if let Ok(rel) = dir.strip_prefix(root) {
+                let cwd = if rel.as_os_str().is_empty() {
+                    ".".to_string()
+                } else {
+                    rel.to_string_lossy().to_string()
+                };
+                self.vars.set("TUP_CWD", &cwd);
+            }
+        }
         let mut rules = Vec::new();
         let mut if_stack: Vec<bool> = Vec::new(); // true = active branch
 
@@ -229,7 +252,7 @@ impl TupfileReader {
                                     sub_reader.vars = self.vars.clone();
                                     sub_reader.bangs = self.bangs.clone();
                                     let include_dir = include_path.parent().unwrap_or(dir);
-                                    let sub_rules = sub_reader.evaluate_with_dir(Some(include_dir))?;
+                                    let sub_rules = sub_reader.evaluate_with_dirs(Some(include_dir), tup_root)?;
                                     // Merge back any variable changes
                                     self.vars = sub_reader.vars;
                                     self.bangs = sub_reader.bangs;

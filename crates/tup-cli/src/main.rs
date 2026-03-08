@@ -247,7 +247,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
             let filename = tupfile_rel.to_string_lossy();
 
-            let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
+            let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
             let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
 
             // Find the dir_id for this directory
@@ -320,7 +320,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         let tupfile_path = tup_root.join(tupfile_rel);
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
-        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
+        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
         let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
         for rule in expanded {
             all_rules.push((tupfile_dir.to_path_buf(), rule));
@@ -370,7 +370,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
 
             if let Ok(dir_id) = resolve_dir_id(&db, dir_rel) {
                 let filename = tupfile_rel.to_string_lossy();
-                if let Ok(rules) = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename) {
+                if let Ok(rules) = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename) {
                     let expanded = expand_rules_for_dir(&rules, tupfile_dir).unwrap_or_default();
                     for rule in &expanded {
                         // Find the CMD node for this rule
@@ -576,7 +576,7 @@ fn cmd_parse() -> anyhow::Result<()> {
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
 
-        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
+        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
         let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
 
         // Find the dir_id for this directory
@@ -646,7 +646,7 @@ fn cmd_graph() -> anyhow::Result<()> {
             .to_string();
 
         let filename = tupfile_rel.to_string_lossy();
-        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &filename)?;
+        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
 
         for rule in rules {
             all_rules.push((
@@ -886,6 +886,7 @@ fn simple_glob_recursive(pattern: &[char], pi: usize, text: &[char], ti: usize) 
 fn parse_tupfile_any(
     tupfile_path: &Path,
     tupfile_dir: &Path,
+    tup_root: &Path,
     filename: &str,
 ) -> anyhow::Result<Vec<tup_parser::Rule>> {
     let content = std::fs::read_to_string(tupfile_path)?;
@@ -895,7 +896,7 @@ fn parse_tupfile_any(
             .map_err(|e| anyhow::anyhow!("{e}"))
     } else {
         let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
-        Ok(reader.evaluate_with_dir(Some(tupfile_dir))?)
+        Ok(reader.evaluate_with_dirs(Some(tupfile_dir), Some(tup_root))?)
     }
 }
 
