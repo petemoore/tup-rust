@@ -1,0 +1,14 @@
+[package]
+name = "tup-monitor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "File system monitor for tup build system"
+
+[dependencies]
+tup-types = { path = "../tup-types" }
+tup-db = { path = "../tup-db" }
+notify = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }

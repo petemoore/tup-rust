@@ -1,0 +1,24 @@
+[package]
+name = "tup-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface for the tup build system"
+
+[[bin]]
+name = "tup"
+path = "src/main.rs"
+
+[dependencies]
+tup-types = { path = "../tup-types" }
+tup-db = { path = "../tup-db" }
+tup-graph = { path = "../tup-graph" }
+tup-parser = { path = "../tup-parser" }
+tup-updater = { path = "../tup-updater" }
+tup-monitor = { path = "../tup-monitor" }
+tup-server = { path = "../tup-server" }
+tup-platform = { path = "../tup-platform" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }

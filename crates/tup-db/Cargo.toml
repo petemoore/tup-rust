@@ -1,0 +1,12 @@
+[package]
+name = "tup-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SQLite-based database layer for tup build system"
+
+[dependencies]
+tup-types = { path = "../tup-types" }
+rusqlite = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

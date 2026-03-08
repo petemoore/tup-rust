@@ -1,0 +1,17 @@
+[package]
+name = "tup-updater"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Build updater/executor for tup build system"
+
+[dependencies]
+tup-types = { path = "../tup-types" }
+tup-db = { path = "../tup-db" }
+tup-graph = { path = "../tup-graph" }
+tup-server = { path = "../tup-server" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+crossbeam = { workspace = true }
+rayon = { workspace = true }
+log = { workspace = true }

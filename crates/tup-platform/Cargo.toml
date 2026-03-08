@@ -1,0 +1,10 @@
+[package]
+name = "tup-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform abstraction layer for tup build system"
+
+[dependencies]
+tup-types = { path = "../tup-types" }
+anyhow = { workspace = true }

@@ -1,0 +1,12 @@
+[package]
+name = "tup-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DAG graph engine for tup build system"
+
+[dependencies]
+tup-types = { path = "../tup-types" }
+tup-db = { path = "../tup-db" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

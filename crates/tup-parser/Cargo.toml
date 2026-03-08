@@ -1,0 +1,15 @@
+[package]
+name = "tup-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tupfile parser for tup build system"
+
+[dependencies]
+tup-types = { path = "../tup-types" }
+tup-db = { path = "../tup-db" }
+tup-graph = { path = "../tup-graph" }
+mlua = { workspace = true }
+regex = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }

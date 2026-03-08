@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        rust: [stable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Build
+        run: cargo build --workspace
+      - name: Test
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # Windows build (enabled once Windows support is added)
+  # build-windows:
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - run: cargo build --workspace
+  #     - run: cargo test --workspace
