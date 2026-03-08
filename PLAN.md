@@ -19,14 +19,14 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 1: Core Types (`tup-types`)
 
-- [ ] **PR #3: Node types, flags, and tupid**
+- [x] **PR #3: Node types, flags, and tupid**
   - `TUP_NODE_TYPE` enum (FILE, CMD, DIR, VAR, GENERATED, GHOST, GROUP, GENERATED_DIR, ROOT)
   - `TUP_LINK_TYPE` enum (NORMAL, STICKY, GROUP)
   - `TUP_FLAGS` enum (MODIFY, CREATE, CONFIG, VARIANT, TRANSIENT)
   - `tupid_t` newtype wrapper
   - Unit tests for all type conversions (i32 ↔ enum)
 
-- [ ] **PR #4: Access event types and version**
+- [x] **PR #4: Access event types and version**
   - `ACCESS_EVENT` types
   - Version string constant
   - `TUP_CONFIG_*` constants
