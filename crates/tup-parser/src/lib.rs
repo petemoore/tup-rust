@@ -10,6 +10,7 @@ mod lexer;
 mod percent;
 mod rule;
 mod vardb;
+mod varsed;
 
 pub use bang::BangDb;
 pub use errors::ParseError;
@@ -18,3 +19,4 @@ pub use lexer::TupfileReader;
 pub use percent::{expand_output_pattern, expand_percent, InputFile};
 pub use rule::{Rule, RuleCommand};
 pub use vardb::ParseVarDb;
+pub use varsed::{varsed, varsed_file};

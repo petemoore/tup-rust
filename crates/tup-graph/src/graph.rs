@@ -366,6 +366,88 @@ impl Graph {
         }
     }
 
+    /// Prune the graph to only include nodes reachable from the given targets.
+    ///
+    /// Corresponds to `prune_graph()` in C. Marks target nodes and their
+    /// transitive dependencies, then removes everything else.
+    ///
+    /// Returns the number of nodes pruned.
+    pub fn prune(&mut self, targets: &[TupId]) -> usize {
+        if targets.is_empty() {
+            return 0;
+        }
+
+        // Mark all target nodes and their transitive dependencies
+        let mut marked: BTreeSet<TupId> = BTreeSet::new();
+        let mut stack: Vec<TupId> = targets.to_vec();
+
+        while let Some(id) = stack.pop() {
+            if marked.contains(&id) {
+                continue;
+            }
+            marked.insert(id);
+
+            // Mark all dependencies (incoming edges = things this node depends on)
+            for &(dep, _) in self.incoming_edges(id) {
+                if !marked.contains(&dep) {
+                    stack.push(dep);
+                }
+            }
+
+            // For CMD nodes, also mark all outputs (outgoing edges)
+            if let Some(node) = self.nodes.get(&id) {
+                if node.node_type == NodeType::Cmd {
+                    for &(out, _) in self.outgoing_edges(id) {
+                        if !marked.contains(&out) {
+                            stack.push(out);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Always keep root
+        marked.insert(self.root);
+
+        // Remove unmarked nodes
+        let to_remove: Vec<TupId> = self.nodes.keys()
+            .filter(|id| !marked.contains(id))
+            .copied()
+            .collect();
+
+        let count = to_remove.len();
+        for id in to_remove {
+            self.remove_node(id);
+        }
+
+        count
+    }
+
+    /// Get all nodes that have no dependencies (leaf inputs).
+    pub fn leaf_nodes(&self) -> Vec<TupId> {
+        self.nodes.keys()
+            .filter(|&&id| id != self.root)
+            .filter(|&&id| self.incoming_edges(id).is_empty())
+            .copied()
+            .collect()
+    }
+
+    /// Get all nodes ready to execute (all dependencies finished).
+    pub fn ready_nodes(&self) -> Vec<TupId> {
+        self.nodes.iter()
+            .filter(|(&id, node)| {
+                id != self.root
+                    && node.state == NodeState::Initialized
+                    && self.incoming_edges(id).iter().all(|&(dep, _)| {
+                        self.nodes.get(&dep)
+                            .map(|n| n.state == NodeState::Finished)
+                            .unwrap_or(true)
+                    })
+            })
+            .map(|(&id, _)| id)
+            .collect()
+    }
+
     /// Generate a Graphviz DOT representation.
     pub fn to_dot(&self) -> String {
         let mut dot = String::from("digraph G {\n");
@@ -841,5 +923,88 @@ mod tests {
         assert!(pos_a < pos_c);
         assert!(pos_b < pos_d);
         assert!(pos_c < pos_d);
+    }
+
+    #[test]
+    fn test_prune_keeps_target_and_deps() {
+        // a.c → gcc → a.o
+        // b.c → gcc2 → b.o
+        let mut g = Graph::new(NodeType::Cmd);
+        let a = TupId::new(1);
+        let cmd1 = TupId::new(2);
+        let ao = TupId::new(3);
+        let b = TupId::new(4);
+        let cmd2 = TupId::new(5);
+        let bo = TupId::new(6);
+
+        g.create_node(a, NodeType::File);
+        g.create_node(cmd1, NodeType::Cmd);
+        g.create_node(ao, NodeType::Generated);
+        g.create_node(b, NodeType::File);
+        g.create_node(cmd2, NodeType::Cmd);
+        g.create_node(bo, NodeType::Generated);
+
+        g.create_edge(a, cmd1, LinkType::Normal).unwrap();
+        g.create_edge(cmd1, ao, LinkType::Normal).unwrap();
+        g.create_edge(b, cmd2, LinkType::Normal).unwrap();
+        g.create_edge(cmd2, bo, LinkType::Normal).unwrap();
+
+        // Prune to only a.o
+        let pruned = g.prune(&[ao]);
+        assert_eq!(pruned, 3); // b, cmd2, bo removed
+        assert!(g.contains(a));
+        assert!(g.contains(cmd1));
+        assert!(g.contains(ao));
+        assert!(!g.contains(b));
+        assert!(!g.contains(cmd2));
+        assert!(!g.contains(bo));
+    }
+
+    #[test]
+    fn test_prune_empty_targets() {
+        let mut g = Graph::new(NodeType::Cmd);
+        g.create_node(TupId::new(1), NodeType::File);
+        let pruned = g.prune(&[]);
+        assert_eq!(pruned, 0);
+    }
+
+    #[test]
+    fn test_leaf_nodes() {
+        let mut g = Graph::new(NodeType::Cmd);
+        let a = TupId::new(1);
+        let b = TupId::new(2);
+        let c = TupId::new(3);
+        g.create_node(a, NodeType::File);
+        g.create_node(b, NodeType::Cmd);
+        g.create_node(c, NodeType::Generated);
+        g.create_edge(a, b, LinkType::Normal).unwrap();
+        g.create_edge(b, c, LinkType::Normal).unwrap();
+
+        let leaves = g.leaf_nodes();
+        assert_eq!(leaves, vec![a]); // a has no incoming
+    }
+
+    #[test]
+    fn test_ready_nodes() {
+        let mut g = Graph::new(NodeType::Cmd);
+        let a = TupId::new(1);
+        let b = TupId::new(2);
+        let c = TupId::new(3);
+        g.create_node(a, NodeType::File);
+        g.create_node(b, NodeType::Cmd);
+        g.create_node(c, NodeType::Cmd);
+        g.create_edge(a, b, LinkType::Normal).unwrap();
+        g.create_edge(a, c, LinkType::Normal).unwrap();
+
+        // Nothing is finished, so only nodes with no deps are ready
+        // a has no incoming, so it's ready. b and c depend on a.
+        let ready = g.ready_nodes();
+        assert_eq!(ready, vec![a]);
+
+        // Finish a
+        g.finish_node(a);
+        let ready = g.ready_nodes();
+        assert!(ready.contains(&b));
+        assert!(ready.contains(&c));
     }
 }

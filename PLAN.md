@@ -105,7 +105,7 @@ Each PR is a self-contained, testable unit of work.
   - Error reporting with cycle path
   - Tests: detect cycles, verify error messages
 
-- [ ] **PR #16: Graph pruning and incremental update**
+- [x] **PR #16: Graph pruning and incremental update**
   - Mark-and-sweep from flagged nodes
   - Prune unchanged subgraphs
   - Transient node handling
@@ -191,7 +191,7 @@ Each PR is a self-contained, testable unit of work.
   - Lua helper functions
   - Tests: Lua Tupfile parsing
 
-- [ ] **PR #29: varsed (variable substitution in files)**
+- [x] **PR #29: varsed (variable substitution in files)**
   - `varsed` command handling
   - `@VAR@` substitution in file contents
   - Tests: varsed transformations
