@@ -86,11 +86,13 @@ a fancy script runner.
 - [x] Wired into CLI: tup upd tracks outputs after each build
 - [x] 4 tests
 
-### PR D6: Cross-Directory Dependencies
-- [ ] Inputs from other directories create links across dir boundaries
-- [ ] When an included file changes, re-parse the including directory
-- [ ] Variant directory mirroring of source tree
-- [ ] Tests: change header in dir A → command in dir B re-runs
+### PR D6: Cross-Directory Dependencies — DONE
+- [x] resolve_path(): traverse directory tree with ".." support
+- [x] resolve_full_path(): look up any file by relative path
+- [x] add_dir_input(): NORMAL links for directory-level dependencies
+- [x] Verified: tupids are globally unique, link tables are global
+- [x] Verified: dir inputs use NORMAL links (not sticky)
+- [x] 7 tests
 
 ---
 
