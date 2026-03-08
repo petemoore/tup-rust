@@ -45,13 +45,17 @@ a fancy script runner.
 - [x] Wired into CLI: `tup upd` runs scan before parsing
 - [x] Tests: 9 tests (empty, new, modified, deleted, dirs, tupfile, hidden, no-change)
 
-### PR D2: Parse → Database Commands
-- [ ] Parse only directories in create_list (not all Tupfiles)
-- [ ] For each rule: create CMD node, link inputs → CMD → outputs
-- [ ] Use tup_db_create_node with ghost upgrade semantics
-- [ ] Track command identity by hashing command string
-- [ ] When a command changes: flag MODIFY
-- [ ] When a command is removed: mark for deletion
+### PR D2: Parse → Database Commands — DONE
+- [x] For each rule: create CMD node, link inputs → CMD → outputs
+- [x] RuleToStore struct for clean rule→DB interface
+- [x] Ghost → CMD upgrade semantics
+- [x] Track command identity by hashing command string + dir_id
+- [x] When a command changes (display/flags): flag MODIFY
+- [x] Duplicate command detection (same hash = same node)
+- [x] get_modified_commands(): query CMD nodes in modify_list
+- [x] mark_command_done(): clear MODIFY after successful execution
+- [x] Output nodes created as GENERATED type with srcid=cmd_id
+- [x] 7 tests
 - [ ] Tests: parse Tupfile → verify CMD/link nodes in DB
 
 ### PR D3: Update → Execute from Graph

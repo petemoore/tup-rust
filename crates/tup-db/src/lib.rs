@@ -3,6 +3,7 @@
 // This crate manages the .tup/db SQLite database that stores the
 // dependency graph, node metadata, variables, and build state.
 
+mod commands;
 mod entry;
 mod error;
 mod link_ops;
@@ -12,6 +13,7 @@ mod sync;
 mod vardb;
 mod variant;
 
+pub use commands::{get_modified_commands, mark_command_done, store_rules, RuleToStore, StoredCommand};
 pub use entry::{EntryCache, TupEntry};
 pub use error::DbError;
 pub use node_ops::CreateResult;
