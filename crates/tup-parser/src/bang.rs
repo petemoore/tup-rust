@@ -23,7 +23,7 @@ pub struct BangMacro {
 }
 
 /// Storage for bang macro definitions.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct BangDb {
     macros: BTreeMap<String, BangMacro>,
 }
