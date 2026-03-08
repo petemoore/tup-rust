@@ -9,9 +9,13 @@ description = "Build updater/executor for tup build system"
 tup-types = { path = "../tup-types" }
 tup-db = { path = "../tup-db" }
 tup-graph = { path = "../tup-graph" }
+tup-parser = { path = "../tup-parser" }
 tup-server = { path = "../tup-server" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 crossbeam = { workspace = true }
 rayon = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
