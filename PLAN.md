@@ -222,7 +222,7 @@ Each PR is a self-contained, testable unit of work.
   - Partial update rollback
   - Tests: build with failures
 
-- [ ] **PR #34: Output verification**
+- [x] **PR #34: Output verification**
   - Check expected outputs were created
   - Detect extra outputs (not declared)
   - Ghost node resolution
@@ -319,7 +319,7 @@ Each PR is a self-contained, testable unit of work.
   - Exit codes matching C version
   - Man page generation
 
-- [ ] **PR #51: Graph visualization**
+- [x] **PR #51: Graph visualization**
   - `tup graph` command
   - Graphviz DOT output
   - Same format as C version

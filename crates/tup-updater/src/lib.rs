@@ -4,7 +4,9 @@
 // spawning, output capture, and error reporting.
 
 mod executor;
+mod outputs;
 mod progress;
 
 pub use executor::{CommandResult, Updater};
+pub use outputs::{snapshot_files, verify_outputs, OutputVerification};
 pub use progress::Progress;
