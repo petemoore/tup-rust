@@ -285,15 +285,15 @@ Each PR is a self-contained, testable unit of work.
   - Tests for `tup init`, basic project setup
   - ~20-30 tests
 
-- [ ] **PR #44: Port t1xxx tests (basic creation/links)**
+- [x] **PR #44: Port t1xxx tests (basic creation/links)**
   - Tests for file creation, linking, basic DAG
   - ~50-100 tests
 
-- [ ] **PR #45: Port t2xxx tests (parsing)**
+- [x] **PR #45: Port t2xxx tests (parsing)**
   - Tests for Tupfile parsing, variables, rules
   - ~100-150 tests
 
-- [ ] **PR #46: Port t3xxx tests (updates)**
+- [x] **PR #46: Port t3xxx tests (updates)**
   - Tests for incremental builds, updates
   - ~100-150 tests
 
