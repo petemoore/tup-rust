@@ -1,3 +1,4 @@
+use crate::bang::BangDb;
 use crate::errors::ParseError;
 use crate::rule::Rule;
 use crate::vardb::ParseVarDb;
@@ -48,6 +49,7 @@ pub enum TupfileLine {
 /// Reader that parses a Tupfile into lines.
 pub struct TupfileReader {
     vars: ParseVarDb,
+    bangs: BangDb,
     lines: Vec<ParsedLine>,
 }
 
@@ -61,6 +63,7 @@ impl TupfileReader {
     pub fn parse(content: &str, filename: &str) -> Result<Self, ParseError> {
         let mut reader = TupfileReader {
             vars: ParseVarDb::new(),
+            bangs: BangDb::new(),
             lines: Vec::new(),
         };
 
@@ -94,6 +97,11 @@ impl TupfileReader {
     /// Get a mutable reference to the variable database.
     pub fn vars_mut(&mut self) -> &mut ParseVarDb {
         &mut self.vars
+    }
+
+    /// Get the bang macro database.
+    pub fn bangs(&self) -> &BangDb {
+        &self.bangs
     }
 
     /// Process all parsed lines, evaluating variables and conditionals.
@@ -161,8 +169,36 @@ impl TupfileReader {
                             let expanded = self.vars.expand(value);
                             self.vars.append(name, &expanded);
                         }
+                        TupfileLine::BangDef { name, definition } => {
+                            let expanded_def = self.vars.expand(definition);
+                            if let Err(e) = self.bangs.define(name, &expanded_def) {
+                                return Err(ParseError::Syntax {
+                                    file: String::new(),
+                                    line: parsed.line_number,
+                                    message: e,
+                                });
+                            }
+                        }
                         TupfileLine::Rule(rule) => {
-                            rules.push(rule.clone());
+                            // Check if command is a bang macro invocation
+                            if rule.command.command.starts_with('!') {
+                                let macro_name = &rule.command.command;
+                                match self.bangs.expand_rule(
+                                    macro_name,
+                                    &rule.inputs,
+                                    &rule.outputs,
+                                    rule.line_number,
+                                ) {
+                                    Ok(expanded) => rules.push(expanded),
+                                    Err(e) => return Err(ParseError::Syntax {
+                                        file: String::new(),
+                                        line: rule.line_number,
+                                        message: e,
+                                    }),
+                                }
+                            } else {
+                                rules.push(rule.clone());
+                            }
                         }
                         _ => {
                             // Include, Export, Import, etc. — handled later
@@ -517,5 +553,49 @@ endif
         assert_eq!(rules.len(), 2);
         assert_eq!(reader.vars().get("CC"), Some("gcc"));
         assert_eq!(reader.vars().get("CFLAGS"), Some("-Wall -O2"));
+    }
+
+    #[test]
+    fn test_bang_macro_definition_and_use() {
+        let content = r#"
+!cc = |> gcc -c %f -o %o |> %B.o
+: foreach *.c |> !cc |>
+"#;
+        let mut reader = TupfileReader::parse(content, "Tupfile").unwrap();
+        let rules = reader.evaluate().unwrap();
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].command.command, "gcc -c %f -o %o");
+        assert_eq!(rules[0].outputs, vec!["%B.o"]);
+        // foreach comes from the macro
+        assert!(!rules[0].foreach); // The rule itself isn't foreach, macro isn't either
+    }
+
+    #[test]
+    fn test_bang_macro_foreach() {
+        let content = r#"
+!cc = foreach |> gcc -c %f -o %o |> %B.o
+: *.c |> !cc |>
+"#;
+        let mut reader = TupfileReader::parse(content, "Tupfile").unwrap();
+        let rules = reader.evaluate().unwrap();
+
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].foreach);
+    }
+
+    #[test]
+    fn test_bang_macro_with_variable() {
+        let content = r#"
+CC = clang
+!cc = |> $(CC) -c %f -o %o |> %B.o
+: main.c |> !cc |>
+"#;
+        let mut reader = TupfileReader::parse(content, "Tupfile").unwrap();
+        let rules = reader.evaluate().unwrap();
+
+        assert_eq!(rules.len(), 1);
+        // Variable should be expanded in the macro definition
+        assert_eq!(rules[0].command.command, "clang -c %f -o %o");
     }
 }
