@@ -121,16 +121,18 @@ a fancy script runner.
 - [x] t2000-t2003: all 4 pass (basic rules, foreach, link objects, variables)
 - [x] t2000-t2059: 10/60 pass (remaining failures are parser edge cases)
 
-### PR T3: t2xxx Parser Fixes — IN PROGRESS
+### PR T3: t2xxx Parser Fixes — DONE (PRs #33-#37)
 - [x] Include directive: reads/processes included files with shared variable state
 - [x] Dollar escaping: `\$` → literal `$` in commands
 - [x] Output pattern expansion for non-foreach rules (`%B`, `%b`)
 - [x] TUP_CWD variable: set to relative path from tup root to current parse dir
-- [ ] include_rules: search up directory tree for Tuprules.tup
-- [ ] Cross-directory input path resolution (paths relative to command dir)
-- [ ] Missing input file detection (parse error on explicit missing files)
-- [ ] Duplicate output detection across commands
-- t2000-t2059: 13/60 pass
+- [x] include_rules: search up directory tree for Tuprules.tup
+- [x] Variable whitespace splitting after expansion (matches C tup eval_path_list)
+- [x] Missing input file detection (parse error on explicit missing files)
+- [x] Duplicate output detection across commands
+- [x] Order-only input links (NORMAL for files, STICKY for generated)
+- t0000-t1009: 15/16 pass, t2000-t2179: 28/178 pass
+- Remaining failures need: ghost lifecycle, groups, tup.config, incremental rebuilds
 
 ### PR T4: t3xxx Tests (Variables/Groups)
 - [ ] Port/run t3000-t3093 (~94 tests)
