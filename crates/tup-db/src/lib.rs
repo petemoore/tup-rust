@@ -9,6 +9,7 @@ mod error;
 mod ghost;
 mod link_ops;
 mod node_ops;
+mod output_tracking;
 mod schema;
 mod sync;
 mod vardb;
@@ -18,6 +19,7 @@ pub use commands::{get_modified_commands, mark_command_done, store_rules, RuleTo
 pub use entry::{EntryCache, TupEntry};
 pub use error::DbError;
 pub use node_ops::CreateResult;
+pub use output_tracking::{track_outputs, OutputTrackResult};
 pub use schema::{NodeRow, TupDb};
 pub use sync::{sync_filesystem, SyncResult};
 pub use vardb::{VarDb, VarEntry};
