@@ -631,3 +631,187 @@ fn t8001_options_command() {
     result.assert_stdout_contains("updater.num_jobs");
     result.assert_stdout_contains("db.sync");
 }
+
+// ============================================================
+// t9000: Lua Tupfile tests
+// ============================================================
+
+#[test]
+fn t9000_lua_basic_rule() {
+    let env = TupTestEnv::new();
+    env.write_file("input.txt", "lua_data");
+    env.write_file("Tupfile.lua", r#"
+tup.definerule{
+    inputs = {"input.txt"},
+    command = "cp %f %o",
+    outputs = {"output.txt"},
+}
+"#);
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("output.txt");
+    assert_eq!(env.read_file("output.txt"), "lua_data");
+}
+
+#[test]
+fn t9001_lua_multiple_rules() {
+    let env = TupTestEnv::new();
+    env.write_file("Tupfile.lua", r#"
+tup.definerule{inputs={}, command="echo one > one.txt", outputs={"one.txt"}}
+tup.definerule{inputs={}, command="echo two > two.txt", outputs={"two.txt"}}
+"#);
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("one.txt");
+    env.check_exist("two.txt");
+}
+
+#[test]
+fn t9002_lua_variables() {
+    let env = TupTestEnv::new();
+    env.write_file("Tupfile.lua", r#"
+local msg = "from_lua"
+tup.definerule{
+    inputs = {},
+    command = "echo " .. msg .. " > output.txt",
+    outputs = {"output.txt"},
+}
+"#);
+    let result = env.update();
+    result.assert_success();
+    assert!(env.read_file("output.txt").contains("from_lua"));
+}
+
+#[test]
+fn t9003_lua_loop() {
+    let env = TupTestEnv::new();
+    env.write_file("a.txt", "a");
+    env.write_file("b.txt", "b");
+    env.write_file("c.txt", "c");
+    env.write_file("Tupfile.lua", r#"
+local files = {"a.txt", "b.txt", "c.txt"}
+for _, f in ipairs(files) do
+    local out = f:gsub("%.txt", ".out")
+    tup.definerule{
+        inputs = {f},
+        command = "cp %f " .. out,
+        outputs = {out},
+    }
+end
+"#);
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("a.out");
+    env.check_exist("b.out");
+    env.check_exist("c.out");
+}
+
+#[test]
+fn t9004_lua_glob() {
+    let env = TupTestEnv::new();
+    env.write_file("x.src", "xx");
+    env.write_file("y.src", "yy");
+    env.write_file("z.dat", "zz");
+    env.write_file("Tupfile.lua", r#"
+local srcs = tup.glob("*.src")
+for _, f in ipairs(srcs) do
+    local out = f:gsub("%.src", ".dst")
+    tup.definerule{
+        inputs = {f},
+        command = "cp " .. f .. " " .. out,
+        outputs = {out},
+    }
+end
+"#);
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("x.dst");
+    env.check_exist("y.dst");
+    env.check_not_exist("z.dst"); // .dat not matched
+}
+
+#[test]
+fn t9005_lua_parse() {
+    let env = TupTestEnv::new();
+    env.write_file("Tupfile.lua", r#"
+tup.definerule{inputs={}, command="echo hi", outputs={"out.txt"}}
+"#);
+    let result = env.parse();
+    result.assert_success();
+    result.assert_stdout_contains("echo hi");
+    result.assert_stdout_contains("out.txt");
+}
+
+// ============================================================
+// t9100: Mixed Tupfile and Tupfile.lua tests
+// ============================================================
+
+#[test]
+fn t9100_mixed_standard_and_lua() {
+    let env = TupTestEnv::new();
+    // Root uses standard Tupfile
+    env.write_tupfile(": |> echo root > %o |> root.txt\n");
+    // Subdirectory uses Lua
+    env.write_file("sub/data.txt", "subdata");
+    env.write_file("sub/Tupfile.lua", r#"
+tup.definerule{
+    inputs = {"data.txt"},
+    command = "cp data.txt output.txt",
+    outputs = {"output.txt"},
+}
+"#);
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("root.txt");
+    env.check_exist("sub/output.txt");
+}
+
+// ============================================================
+// t9200: Stress / edge case tests
+// ============================================================
+
+#[test]
+fn t9200_many_rules() {
+    let env = TupTestEnv::new();
+    let mut tupfile = String::new();
+    for i in 0..20 {
+        env.write_file(&format!("input_{i}.txt"), &format!("data_{i}"));
+        tupfile.push_str(&format!(
+            ": input_{i}.txt |> cp %f %o |> output_{i}.txt\n"
+        ));
+    }
+    env.write_tupfile(&tupfile);
+    let result = env.update();
+    result.assert_success();
+    for i in 0..20 {
+        env.check_exist(&format!("output_{i}.txt"));
+    }
+}
+
+#[test]
+fn t9201_empty_tupfile() {
+    let env = TupTestEnv::new();
+    env.write_tupfile("# Just a comment\n");
+    let result = env.update();
+    result.assert_success();
+}
+
+#[test]
+fn t9202_special_characters_in_output() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(": |> echo hello > %o |> out-put_file.2.txt\n");
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("out-put_file.2.txt");
+}
+
+#[test]
+fn t9203_long_command() {
+    let env = TupTestEnv::new();
+    // Test with a long command line
+    let long_args: String = (0..50).map(|i| format!("-DVAR{i}={i}")).collect::<Vec<_>>().join(" ");
+    env.write_tupfile(&format!(": |> echo {long_args} > %o |> out.txt\n"));
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("out.txt");
+}

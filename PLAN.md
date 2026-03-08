@@ -228,7 +228,7 @@ Each PR is a self-contained, testable unit of work.
   - Ghost node resolution
   - Tests: missing output detection
 
-- [ ] **PR #35: ccache integration**
+- [x] **PR #35: ccache integration**
   - Compiler cache detection
   - Command wrapping
   - Tests: ccache-wrapped builds
@@ -297,11 +297,11 @@ Each PR is a self-contained, testable unit of work.
   - Tests for incremental builds, updates
   - ~100-150 tests
 
-- [ ] **PR #47: Port t4xxx-t5xxx tests (advanced)**
+- [x] **PR #47: Port t4xxx-t5xxx tests (advanced)**
   - Tests for variants, groups, advanced features
   - ~100+ tests
 
-- [ ] **PR #48: Port t6xxx-t9xxx tests (edge cases)**
+- [x] **PR #48: Port t6xxx-t9xxx tests (edge cases)**
   - Remaining test categories
   - Error handling tests
   - ~100+ tests
