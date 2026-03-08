@@ -180,16 +180,19 @@ impl TupfileReader {
                             }
                         }
                         TupfileLine::Rule(rule) => {
+                            // Expand variables in rule components
+                            let expanded_rule = self.expand_rule_vars(rule);
+
                             // Check if command is a bang macro invocation
-                            if rule.command.command.starts_with('!') {
-                                let macro_name = &rule.command.command;
+                            if expanded_rule.command.command.starts_with('!') {
+                                let macro_name = &expanded_rule.command.command;
                                 match self.bangs.expand_rule(
                                     macro_name,
-                                    &rule.inputs,
-                                    &rule.outputs,
-                                    rule.line_number,
+                                    &expanded_rule.inputs,
+                                    &expanded_rule.outputs,
+                                    expanded_rule.line_number,
                                 ) {
-                                    Ok(expanded) => rules.push(expanded),
+                                    Ok(bang_expanded) => rules.push(bang_expanded),
                                     Err(e) => return Err(ParseError::Syntax {
                                         file: String::new(),
                                         line: rule.line_number,
@@ -197,7 +200,7 @@ impl TupfileReader {
                                     }),
                                 }
                             } else {
-                                rules.push(rule.clone());
+                                rules.push(expanded_rule);
                             }
                         }
                         _ => {
@@ -209,6 +212,23 @@ impl TupfileReader {
         }
 
         Ok(rules)
+    }
+
+    /// Expand $(VAR) references in all components of a rule.
+    fn expand_rule_vars(&self, rule: &Rule) -> Rule {
+        Rule {
+            foreach: rule.foreach,
+            inputs: rule.inputs.iter().map(|s| self.vars.expand(s)).collect(),
+            order_only_inputs: rule.order_only_inputs.iter().map(|s| self.vars.expand(s)).collect(),
+            command: crate::rule::RuleCommand {
+                display: rule.command.display.as_ref().map(|s| self.vars.expand(s)),
+                flags: rule.command.flags.clone(),
+                command: self.vars.expand(&rule.command.command),
+            },
+            outputs: rule.outputs.iter().map(|s| self.vars.expand(s)).collect(),
+            extra_outputs: rule.extra_outputs.iter().map(|s| self.vars.expand(s)).collect(),
+            line_number: rule.line_number,
+        }
     }
 
     /// Get all lines (for inspection).

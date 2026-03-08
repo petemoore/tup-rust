@@ -22,3 +22,6 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
