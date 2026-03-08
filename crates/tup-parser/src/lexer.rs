@@ -236,6 +236,49 @@ impl TupfileReader {
                                 rules.push(expanded_rule);
                             }
                         }
+                        TupfileLine::IncludeRules => {
+                            // Search up directory tree for Tuprules.tup files.
+                            // Matches C tup's parser_include_rules() (parser.c:791-843):
+                            // walks from current dir up to tup root, including each
+                            // Tuprules.tup found.
+                            if let Some(dir) = base_dir {
+                                if let Some(root) = tup_root {
+                                    let mut search_dir = dir.to_path_buf();
+                                    let mut tuprules_files = Vec::new();
+                                    loop {
+                                        let candidate = search_dir.join("Tuprules.tup");
+                                        if candidate.exists() {
+                                            tuprules_files.push(candidate);
+                                        }
+                                        if search_dir == root {
+                                            break;
+                                        }
+                                        if !search_dir.pop() {
+                                            break;
+                                        }
+                                    }
+                                    // Process in reverse order (root first, then down)
+                                    tuprules_files.reverse();
+                                    for tuprules_path in tuprules_files {
+                                        let content = std::fs::read_to_string(&tuprules_path)
+                                            .map_err(|e| ParseError::Syntax {
+                                                file: tuprules_path.display().to_string(),
+                                                line: parsed.line_number,
+                                                message: format!("failed to read Tuprules.tup: {e}"),
+                                            })?;
+                                        let tuprules_name = tuprules_path.display().to_string();
+                                        let mut sub_reader = TupfileReader::parse(&content, &tuprules_name)?;
+                                        sub_reader.vars = self.vars.clone();
+                                        sub_reader.bangs = self.bangs.clone();
+                                        let tuprules_dir = tuprules_path.parent().unwrap_or(dir);
+                                        let sub_rules = sub_reader.evaluate_with_dirs(Some(tuprules_dir), Some(root))?;
+                                        self.vars = sub_reader.vars;
+                                        self.bangs = sub_reader.bangs;
+                                        rules.extend(sub_rules);
+                                    }
+                                }
+                            }
+                        }
                         TupfileLine::Include(path) => {
                             if let Some(dir) = base_dir {
                                 let include_path = dir.join(self.vars.expand(path));
@@ -272,18 +315,22 @@ impl TupfileReader {
     }
 
     /// Expand $(VAR) references in all components of a rule.
+    ///
+    /// After expansion, inputs and outputs are re-split on whitespace.
+    /// This matches C tup's eval_path_list() which splits expanded
+    /// variables with strcspn(p, " \t") (parser.c:2452-2471).
     fn expand_rule_vars(&self, rule: &Rule) -> Rule {
         Rule {
             foreach: rule.foreach,
-            inputs: rule.inputs.iter().map(|s| self.vars.expand(s)).collect(),
-            order_only_inputs: rule.order_only_inputs.iter().map(|s| self.vars.expand(s)).collect(),
+            inputs: expand_and_split(&self.vars, &rule.inputs),
+            order_only_inputs: expand_and_split(&self.vars, &rule.order_only_inputs),
             command: crate::rule::RuleCommand {
                 display: rule.command.display.as_ref().map(|s| self.vars.expand(s)),
                 flags: rule.command.flags.clone(),
                 command: self.vars.expand(&rule.command.command),
             },
-            outputs: rule.outputs.iter().map(|s| self.vars.expand(s)).collect(),
-            extra_outputs: rule.extra_outputs.iter().map(|s| self.vars.expand(s)).collect(),
+            outputs: expand_and_split(&self.vars, &rule.outputs),
+            extra_outputs: expand_and_split(&self.vars, &rule.extra_outputs),
             line_number: rule.line_number,
         }
     }
@@ -292,6 +339,28 @@ impl TupfileReader {
     pub fn parsed_lines(&self) -> impl Iterator<Item = (usize, &TupfileLine)> {
         self.lines.iter().map(|pl| (pl.line_number, &pl.content))
     }
+}
+
+/// Expand variables in a list of strings, then re-split on whitespace.
+///
+/// Matches C tup's eval_path_list() (parser.c:2452-2471) which splits
+/// expanded variables with strcspn(p, " \t").
+fn expand_and_split(vars: &ParseVarDb, items: &[String]) -> Vec<String> {
+    let mut result = Vec::new();
+    for s in items {
+        let expanded = vars.expand(s);
+        // If the expanded result contains whitespace, split into words
+        if expanded.contains(char::is_whitespace) {
+            for word in expanded.split_whitespace() {
+                if !word.is_empty() {
+                    result.push(word.to_string());
+                }
+            }
+        } else if !expanded.is_empty() {
+            result.push(expanded);
+        }
+    }
+    result
 }
 
 /// Join lines ending with `\` (line continuation).
