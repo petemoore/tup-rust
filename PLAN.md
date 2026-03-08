@@ -48,7 +48,7 @@ Each PR is a self-contained, testable unit of work.
   - Parent-child relationships
   - Tests: CRUD operations on entries
 
-- [ ] **PR #7: Node CRUD operations**
+- [x] **PR #7: Node CRUD operations**
   - `create_name_file` → insert node into DB
   - `delete_name_file` → remove node from DB
   - Node lookup by name and parent

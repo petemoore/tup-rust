@@ -5,8 +5,10 @@
 
 mod entry;
 mod error;
+mod node_ops;
 mod schema;
 
 pub use entry::{EntryCache, TupEntry};
 pub use error::DbError;
+pub use node_ops::CreateResult;
 pub use schema::{NodeRow, TupDb};
