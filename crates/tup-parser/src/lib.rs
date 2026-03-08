@@ -5,8 +5,9 @@
 
 mod bang;
 mod errors;
-mod glob;
+pub mod glob;
 mod lexer;
+mod lua;
 mod percent;
 mod rule;
 mod vardb;
@@ -18,5 +19,6 @@ pub use glob::{expand_globs, is_glob};
 pub use lexer::TupfileReader;
 pub use percent::{expand_output_pattern, expand_percent, InputFile};
 pub use rule::{Rule, RuleCommand};
+pub use lua::parse_lua_tupfile;
 pub use vardb::ParseVarDb;
 pub use varsed::{varsed, varsed_file};

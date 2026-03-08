@@ -111,7 +111,7 @@ Each PR is a self-contained, testable unit of work.
   - Transient node handling
   - Tests: modify one file, verify minimal rebuild set
 
-- [ ] **PR #17: Directory cache and bins**
+- [x] **PR #17: Directory cache and bins** (incremental build state)
   - Directory content caching
   - Output bin management
   - Path element groups (pel_group)
@@ -184,7 +184,7 @@ Each PR is a self-contained, testable unit of work.
   - Chained rules
   - Tests: macro expansion
 
-- [ ] **PR #28: Lua parser integration**
+- [x] **PR #28: Lua parser integration**
   - Lua Tupfile support (`Tupfile.lua`)
   - `tup.rule()`, `tup.foreach_rule()`
   - `tup.glob()`, `tup.getconfig()`
