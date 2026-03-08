@@ -41,7 +41,7 @@ Each PR is a self-contained, testable unit of work.
   - `tup init` creates `.tup/db` with correct schema
   - Tests: create db, verify schema, reopen db
 
-- [ ] **PR #6: tup_entry and entry cache**
+- [x] **PR #6: tup_entry and entry cache**
   - `TupEntry` struct (Rust equivalent of `struct tup_entry`)
   - Entry cache (in-memory lookup by tupid)
   - Entry creation, lookup, deletion
