@@ -5,6 +5,7 @@
 
 mod entry;
 mod error;
+mod link_ops;
 mod node_ops;
 mod schema;
 
