@@ -270,8 +270,8 @@ fn t5000_parse_shows_rules() {
     env.write_tupfile(": |> echo hello |> out.txt\n");
     let result = env.parse();
     result.assert_success();
-    result.assert_stdout_contains("echo hello");
-    result.assert_stdout_contains("out.txt");
+    // Parse now stores to DB and outputs status to stderr
+    result.assert_stderr_contains("Stored 1 command(s)");
 }
 
 #[test]
@@ -281,8 +281,7 @@ fn t5001_parse_multiple_tupfiles() {
     env.write_tupfile_in("sub", ": |> echo sub |> sub.txt\n");
     let result = env.parse();
     result.assert_success();
-    result.assert_stdout_contains("2 Tupfile(s)");
-    result.assert_stdout_contains("2 rule(s)");
+    result.assert_stderr_contains("Stored 2 command(s) from 2 Tupfile(s)");
 }
 
 // ============================================================
@@ -737,8 +736,7 @@ tup.definerule{inputs={}, command="echo hi", outputs={"out.txt"}}
 "#);
     let result = env.parse();
     result.assert_success();
-    result.assert_stdout_contains("echo hi");
-    result.assert_stdout_contains("out.txt");
+    result.assert_stderr_contains("Stored 1 command(s)");
 }
 
 // ============================================================
