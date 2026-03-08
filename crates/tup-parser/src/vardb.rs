@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 ///
 /// Handles variable assignment (`VAR = value`), append (`VAR += value`),
 /// and expansion (`$(VAR)`).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ParseVarDb {
     vars: BTreeMap<String, String>,
 }
@@ -47,7 +47,11 @@ impl ParseVarDb {
         let mut chars = input.chars().peekable();
 
         while let Some(ch) = chars.next() {
-            if ch == '$' && chars.peek() == Some(&'(') {
+            if ch == '\\' && chars.peek() == Some(&'$') {
+                // Escaped dollar sign: \$ → literal $
+                chars.next(); // consume '$'
+                result.push('$');
+            } else if ch == '$' && chars.peek() == Some(&'(') {
                 chars.next(); // consume '('
                 let mut var_name = String::new();
                 let mut depth = 1;

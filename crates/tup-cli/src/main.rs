@@ -738,7 +738,20 @@ fn expand_rules_for_dir(
                 .map(|p| tup_parser::InputFile::new(p))
                 .collect();
 
-            let outputs = rule.outputs.clone();
+            // Expand output patterns with % substitutions
+            let outputs: Vec<String> = if let Some(first_input) = inputs.first() {
+                rule.outputs.iter()
+                    .map(|pat| {
+                        if pat.contains('%') {
+                            tup_parser::expand_output_pattern(pat, first_input)
+                        } else {
+                            pat.clone()
+                        }
+                    })
+                    .collect()
+            } else {
+                rule.outputs.clone()
+            };
 
             let cmd = tup_parser::expand_percent(
                 &rule.command.command,
@@ -882,7 +895,7 @@ fn parse_tupfile_any(
             .map_err(|e| anyhow::anyhow!("{e}"))
     } else {
         let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
-        Ok(reader.evaluate()?)
+        Ok(reader.evaluate_with_dir(Some(tupfile_dir))?)
     }
 }
 

@@ -4,7 +4,7 @@ use crate::rule::Rule;
 use crate::vardb::ParseVarDb;
 
 /// A parsed line from a Tupfile.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TupfileLine {
     /// Empty line or comment.
     Empty,
@@ -53,6 +53,7 @@ pub struct TupfileReader {
     lines: Vec<ParsedLine>,
 }
 
+#[derive(Clone)]
 struct ParsedLine {
     content: TupfileLine,
     line_number: usize,
@@ -107,11 +108,20 @@ impl TupfileReader {
     /// Process all parsed lines, evaluating variables and conditionals.
     ///
     /// Returns the list of rules found in the Tupfile.
+    /// If `base_dir` is provided, include directives are resolved relative to it.
     pub fn evaluate(&mut self) -> Result<Vec<Rule>, ParseError> {
+        self.evaluate_with_dir(None)
+    }
+
+    /// Process all parsed lines with a base directory for include resolution.
+    pub fn evaluate_with_dir(&mut self, base_dir: Option<&std::path::Path>) -> Result<Vec<Rule>, ParseError> {
         let mut rules = Vec::new();
         let mut if_stack: Vec<bool> = Vec::new(); // true = active branch
 
-        for parsed in &self.lines {
+        // Clone lines to allow mutable access to self during iteration
+        let lines = self.lines.clone();
+
+        for parsed in &lines {
             match &parsed.content {
                 TupfileLine::Ifdef(var) => {
                     let is_active = if_stack.last().copied().unwrap_or(true);
@@ -203,8 +213,32 @@ impl TupfileReader {
                                 rules.push(expanded_rule);
                             }
                         }
+                        TupfileLine::Include(path) => {
+                            if let Some(dir) = base_dir {
+                                let include_path = dir.join(self.vars.expand(path));
+                                if include_path.exists() {
+                                    let content = std::fs::read_to_string(&include_path)
+                                        .map_err(|e| ParseError::Syntax {
+                                            file: include_path.display().to_string(),
+                                            line: parsed.line_number,
+                                            message: format!("failed to read include file: {e}"),
+                                        })?;
+                                    let include_name = include_path.display().to_string();
+                                    let mut sub_reader = TupfileReader::parse(&content, &include_name)?;
+                                    // Share our variable and bang databases
+                                    sub_reader.vars = self.vars.clone();
+                                    sub_reader.bangs = self.bangs.clone();
+                                    let include_dir = include_path.parent().unwrap_or(dir);
+                                    let sub_rules = sub_reader.evaluate_with_dir(Some(include_dir))?;
+                                    // Merge back any variable changes
+                                    self.vars = sub_reader.vars;
+                                    self.bangs = sub_reader.bangs;
+                                    rules.extend(sub_rules);
+                                }
+                            }
+                        }
                         _ => {
-                            // Include, Export, Import, etc. — handled later
+                            // Export, Import, etc. — handled later
                         }
                     }
                 }
