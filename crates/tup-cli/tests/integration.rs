@@ -320,3 +320,314 @@ fn t7000_parallel_build() {
     env.check_exist("b.out");
     env.check_exist("c.out");
 }
+
+// ============================================================
+// t1100: Percent substitution tests
+// ============================================================
+
+#[test]
+fn t1100_percent_f_single() {
+    let env = TupTestEnv::new();
+    env.write_file("src.txt", "content");
+    env.write_tupfile(": src.txt |> echo %f > %o |> out.txt\n");
+    let result = env.update();
+    result.assert_success();
+    assert!(env.read_file("out.txt").contains("src.txt"));
+}
+
+#[test]
+fn t1101_percent_f_multiple() {
+    let env = TupTestEnv::new();
+    env.write_file("a.c", "");
+    env.write_file("b.c", "");
+    env.write_tupfile(": a.c b.c |> echo %f > %o |> out.txt\n");
+    let result = env.update();
+    result.assert_success();
+    let content = env.read_file("out.txt");
+    assert!(content.contains("a.c"));
+    assert!(content.contains("b.c"));
+}
+
+#[test]
+fn t1102_percent_b_basename() {
+    let env = TupTestEnv::new();
+    env.write_file("src/main.c", "");
+    env.write_tupfile_in("src", ": main.c |> echo %b > %o |> out.txt\n");
+    let result = env.update();
+    result.assert_success();
+    assert!(env.read_file("src/out.txt").contains("main.c"));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn t1103_percent_B_no_ext() {
+    let env = TupTestEnv::new();
+    env.write_file("hello.c", "");
+    env.write_tupfile(": hello.c |> echo %B > %o |> out.txt\n");
+    let result = env.update();
+    result.assert_success();
+    assert!(env.read_file("out.txt").contains("hello"));
+    // Should NOT contain the .c extension
+    assert!(!env.read_file("out.txt").contains("hello.c"));
+}
+
+#[test]
+fn t1104_percent_o_output() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(": |> echo written > %o |> result.txt\n");
+    let result = env.update();
+    result.assert_success();
+    assert!(env.read_file("result.txt").contains("written"));
+}
+
+#[test]
+fn t1105_percent_e_extension() {
+    let env = TupTestEnv::new();
+    env.write_file("test.cpp", "");
+    env.write_tupfile(": foreach test.cpp |> echo %e > %o |> %B.ext\n");
+    let result = env.update();
+    result.assert_success();
+    assert!(env.read_file("test.ext").contains("cpp"));
+}
+
+#[test]
+fn t1106_percent_literal() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(": |> echo 100%% > %o |> out.txt\n");
+    let result = env.update();
+    result.assert_success();
+    assert!(env.read_file("out.txt").contains("100%"));
+}
+
+// ============================================================
+// t2200: Advanced variable tests
+// ============================================================
+
+#[test]
+fn t2200_nested_variable_expansion() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(
+        "A = hello\n\
+         B = $(A) world\n\
+         : |> echo $(B) > %o |> out.txt\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    let content = env.read_file("out.txt");
+    assert!(content.contains("hello"));
+    assert!(content.contains("world"));
+}
+
+#[test]
+fn t2201_variable_in_output() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(
+        "OUT = result.txt\n\
+         : |> echo done > %o |> $(OUT)\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("result.txt");
+}
+
+#[test]
+fn t2202_variable_in_input() {
+    let env = TupTestEnv::new();
+    env.write_file("data.txt", "test_data");
+    env.write_tupfile(
+        "SRC = data.txt\n\
+         : $(SRC) |> cp %f %o |> copy.txt\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    assert_eq!(env.read_file("copy.txt"), "test_data");
+}
+
+#[test]
+fn t2203_ifdef_nested() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(
+        "A = yes\n\
+         B = yes\n\
+         ifdef A\n\
+         ifdef B\n\
+         : |> echo both > %o |> out.txt\n\
+         endif\n\
+         endif\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("out.txt");
+    assert!(env.read_file("out.txt").contains("both"));
+}
+
+#[test]
+fn t2204_ifneq() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(
+        "CC = clang\n\
+         ifneq ($(CC), gcc)\n\
+         : |> echo not_gcc > %o |> out.txt\n\
+         endif\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    assert!(env.read_file("out.txt").contains("not_gcc"));
+}
+
+// ============================================================
+// t2300: Comment and whitespace tests
+// ============================================================
+
+#[test]
+fn t2300_comments_ignored() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(
+        "# This is a comment\n\
+         : |> echo ok > %o |> out.txt\n\
+         # Another comment\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("out.txt");
+}
+
+#[test]
+fn t2301_line_continuation() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(
+        "MSG = hello \\\n\
+         world\n\
+         : |> echo $(MSG) > %o |> out.txt\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    let content = env.read_file("out.txt");
+    assert!(content.contains("hello"));
+    assert!(content.contains("world"));
+}
+
+// ============================================================
+// t2400: Bang macro advanced tests
+// ============================================================
+
+#[test]
+fn t2400_bang_with_variable() {
+    let env = TupTestEnv::new();
+    env.write_file("input.txt", "data");
+    env.write_tupfile(
+        "CMD = cp\n\
+         !copy = |> $(CMD) %f %o |> %B.out\n\
+         : input.txt |> !copy |>\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("input.out");
+    assert_eq!(env.read_file("input.out"), "data");
+}
+
+#[test]
+fn t2401_bang_foreach() {
+    let env = TupTestEnv::new();
+    env.write_file("x.txt", "xx");
+    env.write_file("y.txt", "yy");
+    env.write_tupfile(
+        "!cp = foreach |> cp %f %o |> %B.out\n\
+         : *.txt |> !cp |>\n"
+    );
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("x.out");
+    env.check_exist("y.out");
+}
+
+// ============================================================
+// t3100: Deep directory tests
+// ============================================================
+
+#[test]
+fn t3100_deeply_nested() {
+    let env = TupTestEnv::new();
+    env.write_file("a/b/c/input.txt", "deep");
+    env.write_tupfile_in("a/b/c", ": input.txt |> cp %f %o |> output.txt\n");
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("a/b/c/output.txt");
+    assert_eq!(env.read_file("a/b/c/output.txt"), "deep");
+}
+
+#[test]
+fn t3101_multiple_tupfiles_different_levels() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(": |> echo root > %o |> root.txt\n");
+    env.write_file("sub/data.txt", "sub_data");
+    env.write_tupfile_in("sub", ": data.txt |> cp %f %o |> copy.txt\n");
+    env.write_file("sub/deep/item.txt", "deep_item");
+    env.write_tupfile_in("sub/deep", ": item.txt |> cp %f %o |> result.txt\n");
+
+    let result = env.update();
+    result.assert_success();
+    env.check_exist("root.txt");
+    env.check_exist("sub/copy.txt");
+    env.check_exist("sub/deep/result.txt");
+}
+
+// ============================================================
+// t4100: Error message tests
+// ============================================================
+
+#[test]
+fn t4100_no_tupfile_no_error() {
+    let env = TupTestEnv::new();
+    // No Tupfile — should succeed with "No Tupfiles found"
+    let result = env.update();
+    result.assert_success();
+}
+
+#[test]
+fn t4101_failed_command_shows_stderr() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(": |> echo error_msg >&2 && false |>\n");
+    let result = env.update();
+    result.assert_failure();
+    result.assert_stderr_contains("error_msg");
+}
+
+// ============================================================
+// t5100: Scan command tests
+// ============================================================
+
+#[test]
+fn t5100_scan_shows_counts() {
+    let env = TupTestEnv::new();
+    env.write_file("a.c", "");
+    env.write_file("b.c", "");
+    env.write_tupfile(": |> echo |>\n");
+    let result = env.run_tup(&["scan"]);
+    result.assert_success();
+    result.assert_stdout_contains("file(s) found");
+    result.assert_stdout_contains("Tupfile(s) found");
+}
+
+// ============================================================
+// t8000: Display string tests
+// ============================================================
+
+#[test]
+fn t8000_display_string() {
+    let env = TupTestEnv::new();
+    env.write_tupfile(": |> ^Creating output^ echo hello > %o |> out.txt\n");
+    let result = env.update();
+    result.assert_success();
+    result.assert_stderr_contains("Creating output");
+    env.check_exist("out.txt");
+}
+
+#[test]
+fn t8001_options_command() {
+    let env = TupTestEnv::new();
+    let result = env.run_tup(&["options"]);
+    result.assert_success();
+    result.assert_stdout_contains("updater.num_jobs");
+    result.assert_stdout_contains("db.sync");
+}
