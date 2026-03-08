@@ -178,7 +178,7 @@ Each PR is a self-contained, testable unit of work.
   - Path normalization
   - Tests: glob matching
 
-- [ ] **PR #27: Macros and bins**
+- [x] **PR #27: Macros and bins**
   - `!macro` definition and invocation
   - `{bin}` references
   - Chained rules
@@ -210,7 +210,7 @@ Each PR is a self-contained, testable unit of work.
   - `-j N` parallelism option
   - Tests: parallel builds, dependency ordering
 
-- [ ] **PR #32: Progress and timing**
+- [x] **PR #32: Progress and timing**
   - Progress bar / status line
   - Per-command timing
   - Build summary
