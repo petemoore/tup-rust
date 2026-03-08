@@ -11,3 +11,6 @@ tup-db = { path = "../tup-db" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
