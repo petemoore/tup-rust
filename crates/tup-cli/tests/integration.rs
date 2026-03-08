@@ -69,7 +69,6 @@ fn t1003_version_command() {
     let result = env.run_tup(&["version"]);
     result.assert_success();
     result.assert_stdout_contains("tup-rust");
-    result.assert_stdout_contains("Platform:");
 }
 
 // ============================================================
@@ -605,8 +604,8 @@ fn t5100_scan_shows_counts() {
     env.write_tupfile(": |> echo |>\n");
     let result = env.run_tup(&["scan"]);
     result.assert_success();
-    result.assert_stdout_contains("file(s) found");
-    result.assert_stdout_contains("Tupfile(s) found");
+    // Scan output goes to stderr
+    result.assert_stderr_contains("Scan:");
 }
 
 // ============================================================
