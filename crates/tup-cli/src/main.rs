@@ -49,8 +49,12 @@ enum Commands {
     Monitor,
     /// Stop the file monitor daemon
     Stop,
-    /// Display the dependency graph
-    Graph,
+    /// Display the dependency graph in Graphviz DOT format
+    Graph {
+        /// Show directory nodes
+        #[arg(long)]
+        dirs: bool,
+    },
     /// Manage variants
     Variant,
 }
@@ -74,6 +78,7 @@ fn main() {
             cmd_options();
             Ok(())
         }
+        Some(Commands::Graph { dirs: _ }) => cmd_graph(),
         Some(_) => {
             eprintln!("Command not yet implemented");
             Ok(())
@@ -269,6 +274,43 @@ fn cmd_parse() -> anyhow::Result<()> {
     }
 
     println!("\n{} Tupfile(s), {} rule(s) total.", tupfiles.len(), total_rules);
+    Ok(())
+}
+
+fn cmd_graph() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
+
+    let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let mut all_rules = Vec::new();
+    for tupfile_rel in &tupfiles {
+        let tupfile_path = tup_root.join(tupfile_rel);
+        let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
+        let dir_rel = tupfile_dir.strip_prefix(&tup_root)
+            .unwrap_or(Path::new(""))
+            .to_string_lossy()
+            .to_string();
+
+        let content = std::fs::read_to_string(&tupfile_path)?;
+        let filename = tupfile_rel.to_string_lossy();
+        let mut reader = tup_parser::TupfileReader::parse(&content, &filename)?;
+        let rules = reader.evaluate()?;
+
+        for rule in rules {
+            all_rules.push((
+                dir_rel.clone(),
+                rule.inputs.clone(),
+                rule.command.command.clone(),
+                rule.outputs.clone(),
+            ));
+        }
+    }
+
+    let dot = tup_graph::rules_to_dot(&all_rules);
+    print!("{dot}");
     Ok(())
 }
 
