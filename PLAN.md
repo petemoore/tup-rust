@@ -61,19 +61,19 @@ Each PR is a self-contained, testable unit of work.
   - Link queries (get inputs, get outputs)
   - Tests: link nodes, query dependencies
 
-- [ ] **PR #9: Flag operations**
+- [x] **PR #9: Flag operations** (completed in PRs #5 and #8)
   - Set/clear/query node flags (MODIFY, CREATE, etc.)
   - Flag propagation
   - Modified list queries
   - Tests: flag lifecycle
 
-- [ ] **PR #10: Variable database**
+- [x] **PR #10: Variable database**
   - `vardb` — in-memory variable store
   - Variable CRUD in SQLite
   - @-variable resolution
   - Tests: set/get/delete variables
 
-- [ ] **PR #11: Configuration and options**
+- [x] **PR #11: Configuration and options**
   - `tup.config` parsing
   - Option storage and retrieval
   - Default option values
