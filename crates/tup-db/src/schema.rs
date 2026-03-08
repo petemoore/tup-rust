@@ -591,7 +591,7 @@ pub struct NodeRow {
 }
 
 impl NodeRow {
-    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+    pub(crate) fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
         let type_val: i32 = row.get(2)?;
         Ok(NodeRow {
             id: TupId::new(row.get(0)?),

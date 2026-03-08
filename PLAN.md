@@ -55,7 +55,7 @@ Each PR is a self-contained, testable unit of work.
   - Directory scanning and node creation
   - Tests: create files, directories, commands; verify DB state
 
-- [ ] **PR #8: Link/edge operations**
+- [x] **PR #8: Link/edge operations**
   - Create/delete links between nodes
   - NORMAL, STICKY, GROUP link types
   - Link queries (get inputs, get outputs)
