@@ -145,13 +145,13 @@ Each PR is a self-contained, testable unit of work.
 
 ## Phase 5: Tupfile Parser (`tup-parser`)
 
-- [ ] **PR #22: Basic Tupfile parsing**
+- [x] **PR #22: Basic Tupfile parsing**
   - Rule syntax: `: inputs |> command |> outputs`
   - Comment handling
   - Line continuation (`\`)
   - Tests: parse simple Tupfiles
 
-- [ ] **PR #23: Variable handling**
+- [x] **PR #23: Variable handling**
   - Variable assignment and reference (`$(VAR)`)
   - `@(VAR)` config variable references
   - `&(VAR)` group references
@@ -164,7 +164,7 @@ Each PR is a self-contained, testable unit of work.
   - Ordered/unordered outputs
   - Tests: pattern substitution
 
-- [ ] **PR #25: Includes and conditionals**
+- [x] **PR #25: Includes and conditionals**
   - `include` directive
   - `include_rules` directive
   - `ifdef`/`ifndef`/`else`/`endif`
