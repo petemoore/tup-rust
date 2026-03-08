@@ -46,15 +46,18 @@ and warn about them.
 - [x] watch_for(duration) for timed monitoring
 - [x] 5 tests
 
-### Phase D: LD_PRELOAD Shared Library [PR #39]
-- [ ] C source for ldpreload.so (port from original)
-- [ ] Build via `cc` crate in build.rs
-- [ ] Syscall wrapping: open, fopen, stat, rename, unlink, execve, chdir
-- [ ] CWD tracking for relative path resolution
-- [ ] Depfile output (ACCESS_EVENT_MAX_SIZE protocol)
-- [ ] Fork safety (pthread_atfork)
-- [ ] ccache path filtering
-- [ ] Tests: inject into child, verify file accesses recorded
+### Phase D: LD_PRELOAD Shared Library [PR #39] — DONE
+- [x] C source for ldpreload.so (csrc/ldpreload.c, ~250 lines)
+- [x] Build via cc in build.rs (Linux only)
+- [x] Syscall wrapping: open, open64, fopen, fopen64, rename, unlink,
+      symlink, execve, chdir, fchdir
+- [x] CWD tracking for relative path resolution
+- [x] Depfile output (binary protocol matching access_event struct)
+- [x] Fork safety (pthread_atfork handlers)
+- [x] ccache and system path filtering (/dev, /sys, /proc)
+- [x] Thread-safe with pthread_mutex
+- [x] LdPreloadLib detector for finding compiled library
+- [x] 2 tests
 
 ### Phase E: FUSE Server — Linux [PR #40]
 - [ ] `fuser` crate integration

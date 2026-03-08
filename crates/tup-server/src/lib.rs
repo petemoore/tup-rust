@@ -4,7 +4,9 @@
 // via file system interception.
 
 pub mod depfile;
+pub mod ldpreload;
 pub mod process;
 
 pub use depfile::{FileAccess, FileAccessSummary, read_depfile, write_depfile};
+pub use ldpreload::LdPreloadLib;
 pub use process::{ProcessServer, ServerMode, ServerResult};
