@@ -13,7 +13,7 @@ Each PR is a self-contained, testable unit of work.
   - CI setup (cargo build, cargo test, cargo clippy)
   - .gitignore, LICENSE
 
-- [ ] **PR #2: C analysis documents**
+- [x] **PR #2: C analysis documents**
   - `C_ANALYSIS/` directory with specs for every C module
   - These serve as contracts for Rust implementation
 
