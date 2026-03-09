@@ -9,6 +9,9 @@ description = "Command-line interface for the tup build system"
 name = "tup"
 path = "src/main.rs"
 
+[features]
+fuse = ["tup-server/fuse"]
+
 [dependencies]
 tup-types = { path = "../tup-types" }
 tup-db = { path = "../tup-db" }
