@@ -745,33 +745,7 @@ impl Filesystem for TupFuseFs {
 
     /// Open a file.
     /// Port of C tup's tup_fs_open() (fuse_fs.c).
-    fn open(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
-        if self.inode_path(ino).is_none() {
-            reply.error(libc::ENOENT);
-            return;
-        }
-
-        // Record the read access in the job's FileInfo
-        // C: tup_fuse_handle_file(path, stripped, ACCESS_READ)
-        self.record_access(ino, tup_types::AccessType::Read);
-
-        // Return FH=0, let kernel handle the actual FD
-        reply.opened(0, 0);
-    }
-
-    /// Read data from a file.
-    /// Port of C tup's tup_fs_read() (fuse_fs.c).
-    fn read(
-        &mut self,
-        _req: &Request<'_>,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
-        size: u32,
-        _flags: i32,
-        _lock_owner: Option<u64>,
-        reply: ReplyData,
-    ) {
+    fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let path = match self.inode_path(ino) {
             Some(p) => p,
             None => {
@@ -780,21 +754,75 @@ impl Filesystem for TupFuseFs {
             }
         };
 
+        // Determine access type from flags
+        // C: if((fi->flags & O_RDWR) || (fi->flags & O_WRONLY)) at = ACCESS_WRITE
+        let at = if (flags & libc::O_RDWR != 0) || (flags & libc::O_WRONLY != 0) {
+            tup_types::AccessType::Write
+        } else {
+            tup_types::AccessType::Read
+        };
+        self.record_access(ino, at);
+
+        // Actually open the file and return the FD as file handle.
+        // C: fd = openat(tup_top_fd(), openfile, fi->flags); fi->fh = fd;
         let real_path = self.resolve_real_path(&path);
-        match std::fs::read(&real_path) {
-            Ok(data) => {
-                let start = offset as usize;
-                let end = std::cmp::min(start + size as usize, data.len());
-                if start < data.len() {
-                    reply.data(&data[start..end]);
-                } else {
-                    reply.data(&[]);
-                }
-            }
+        let c_path = match std::ffi::CString::new(real_path.to_string_lossy().as_bytes()) {
+            Ok(p) => p,
             Err(_) => {
-                reply.error(libc::EIO);
+                reply.error(libc::EINVAL);
+                return;
             }
+        };
+        let fd = unsafe { libc::open(c_path.as_ptr(), flags & !libc::O_NOFOLLOW) };
+        if fd < 0 {
+            reply.error(
+                std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EIO),
+            );
+        } else {
+            reply.opened(fd as u64, 0);
         }
+    }
+
+    /// Read data from a file.
+    /// Port of C tup's tup_fs_read() (fuse_fs.c).
+    fn read(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyData,
+    ) {
+        // Use pread on the file handle from open()
+        // C: res = pread(fi->fh, buf, size, offset);
+        if fh > 0 {
+            let mut buf = vec![0u8; size as usize];
+            let n = unsafe {
+                libc::pread(
+                    fh as i32,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    size as usize,
+                    offset,
+                )
+            };
+            if n < 0 {
+                reply.error(
+                    std::io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EIO),
+                );
+            } else {
+                reply.data(&buf[..n as usize]);
+            }
+            return;
+        }
+        // Fallback: no file handle — this shouldn't happen
+        reply.error(libc::EBADF);
     }
 
     /// Release (close) a file.
@@ -803,12 +831,17 @@ impl Filesystem for TupFuseFs {
         &mut self,
         _req: &Request<'_>,
         _ino: u64,
-        _fh: u64,
+        fh: u64,
         _flags: i32,
         _lock_owner: Option<u64>,
         _flush: bool,
         reply: fuser::ReplyEmpty,
     ) {
+        // Close the file descriptor
+        // C: close(fi->fh); finfo->open_count--;
+        if fh > 0 {
+            unsafe { libc::close(fh as i32) };
+        }
         reply.ok();
     }
 
@@ -818,8 +851,8 @@ impl Filesystem for TupFuseFs {
     fn write(
         &mut self,
         _req: &Request<'_>,
-        ino: u64,
-        _fh: u64,
+        _ino: u64,
+        fh: u64,
         offset: i64,
         data: &[u8],
         _write_flags: u32,
@@ -827,31 +860,29 @@ impl Filesystem for TupFuseFs {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
-        let path = match self.inode_path(ino) {
-            Some(p) => p,
-            None => {
-                reply.error(libc::ENOENT);
-                return;
+        // Use pwrite on the file handle from open()/create()
+        // C: res = pwrite(fi->fh, buf, size, offset);
+        if fh > 0 {
+            let n = unsafe {
+                libc::pwrite(
+                    fh as i32,
+                    data.as_ptr() as *const libc::c_void,
+                    data.len(),
+                    offset,
+                )
+            };
+            if n < 0 {
+                reply.error(
+                    std::io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EIO),
+                );
+            } else {
+                reply.written(n as u32);
             }
-        };
-
-        // Resolve virtual path to real filesystem path
-        let real_path = self.resolve_real_path(&path);
-        use std::io::Write;
-        match std::fs::OpenOptions::new().write(true).open(&real_path) {
-            Ok(mut f) => {
-                use std::io::Seek;
-                if f.seek(std::io::SeekFrom::Start(offset as u64)).is_err() {
-                    reply.error(libc::EIO);
-                    return;
-                }
-                match f.write(data) {
-                    Ok(n) => reply.written(n as u32),
-                    Err(_) => reply.error(libc::EIO),
-                }
-            }
-            Err(_) => reply.error(libc::EIO),
+            return;
         }
+        reply.error(libc::EBADF);
     }
 
     /// Create and open a file.
@@ -878,21 +909,41 @@ impl Filesystem for TupFuseFs {
         let child_path = parent_path.join(name);
         let real_child = self.resolve_real_path(&child_path);
 
-        // Create the file (C: mknod_internal with O_CREAT | O_WRONLY | O_TRUNC)
-        match std::fs::File::create(&real_child) {
-            Ok(_) => {
-                let ino = self.get_or_create_inode(&child_path);
-                // Record write access (C: tup_fuse_handle_file(path, NULL, ACCESS_WRITE))
-                self.record_access(ino, tup_types::AccessType::Write);
-                match std::fs::symlink_metadata(&real_child) {
-                    Ok(meta) => {
-                        let attr = metadata_to_attr(ino, &meta);
-                        reply.created(&TTL, &attr, 0, 0, 0);
-                    }
-                    Err(_) => reply.error(libc::EIO),
-                }
+        // Create and open the file, returning the FD as file handle.
+        // C: mknod_internal(path, mode, fi->flags, 0) → rc = openat(...)
+        let c_path = match std::ffi::CString::new(real_child.to_string_lossy().as_bytes()) {
+            Ok(p) => p,
+            Err(_) => {
+                reply.error(libc::EINVAL);
+                return;
             }
-            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        };
+        let fd = unsafe {
+            libc::open(
+                c_path.as_ptr(),
+                libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC,
+                0o644,
+            )
+        };
+        if fd < 0 {
+            reply.error(
+                std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EIO),
+            );
+            return;
+        }
+        let ino = self.get_or_create_inode(&child_path);
+        self.record_access(ino, tup_types::AccessType::Write);
+        match std::fs::symlink_metadata(&real_child) {
+            Ok(meta) => {
+                let attr = metadata_to_attr(ino, &meta);
+                reply.created(&TTL, &attr, 0, fd as u64, 0);
+            }
+            Err(_) => {
+                unsafe { libc::close(fd) };
+                reply.error(libc::EIO);
+            }
         }
     }
 
