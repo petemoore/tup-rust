@@ -270,8 +270,8 @@ fn t5000_parse_shows_rules() {
     env.write_tupfile(": |> echo hello |> out.txt\n");
     let result = env.parse();
     result.assert_success();
-    // Parse now stores to DB and outputs status to stderr
-    result.assert_stderr_contains("Stored 1 command(s)");
+    // Parse now stores to DB and outputs status to stdout
+    result.assert_stdout_contains("Stored 1 command(s)");
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn t5001_parse_multiple_tupfiles() {
     env.write_tupfile_in("sub", ": |> echo sub |> sub.txt\n");
     let result = env.parse();
     result.assert_success();
-    result.assert_stderr_contains("Stored 2 command(s) from 2 Tupfile(s)");
+    result.assert_stdout_contains("Stored 2 command(s) from 2 Tupfile(s)");
 }
 
 // ============================================================
@@ -603,8 +603,8 @@ fn t5100_scan_shows_counts() {
     env.write_tupfile(": |> echo |>\n");
     let result = env.run_tup(&["scan"]);
     result.assert_success();
-    // Scan output goes to stderr
-    result.assert_stderr_contains("Scan:");
+    // Scan output goes to stdout (matching C tup)
+    result.assert_stdout_contains("Scan:");
 }
 
 // ============================================================
@@ -617,7 +617,7 @@ fn t8000_display_string() {
     env.write_tupfile(": |> ^Creating output^ echo hello > %o |> out.txt\n");
     let result = env.update();
     result.assert_success();
-    result.assert_stderr_contains("Creating output");
+    result.assert_stdout_contains("Creating output");
     env.check_exist("out.txt");
 }
 
@@ -754,7 +754,7 @@ tup.definerule{inputs={}, command="echo hi", outputs={"out.txt"}}
     );
     let result = env.parse();
     result.assert_success();
-    result.assert_stderr_contains("Stored 1 command(s)");
+    result.assert_stdout_contains("Stored 1 command(s)");
 }
 
 // ============================================================
