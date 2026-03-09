@@ -655,22 +655,22 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     let mut _next_job_id: i64 = 1;
 
     for (dir_path, rules) in &dir_rule_groups {
-        // Register FUSE job for dependency tracking.
-        // Note: Commands execute in the real directory for now. Redirecting
-        // CWD through the FUSE mount requires the virtual @tupjob-N directory
-        // to fully support getcwd/readdir/getattr, which needs more work on
-        // the FUSE filesystem (WP11). For now, FUSE tracks passively.
+        // Register FUSE job and redirect CWD through FUSE mount.
+        // C: server_exec() registers job, executes in @tupjob-N dir.
         #[cfg(feature = "fuse")]
-        let _fuse_finfo = if let Some(ref fuse) = _fuse_mount {
+        let (actual_dir, _fuse_finfo) = if let Some(ref fuse) = _fuse_mount {
             let job_id = _next_job_id;
             _next_job_id += 1;
             let finfo = fuse.register_job(job_id);
-            Some((job_id, finfo))
+            let fuse_dir = fuse.job_path(job_id, dir_path);
+            (fuse_dir, Some((job_id, finfo)))
         } else {
-            None
+            (dir_path.clone(), None)
         };
+        #[cfg(not(feature = "fuse"))]
+        let actual_dir = dir_path.clone();
 
-        let (run, failed) = execute_dir_rules(dir_path, rules, keep_going, num_jobs)?;
+        let (run, failed) = execute_dir_rules(&actual_dir, rules, keep_going, num_jobs)?;
         total_run += run;
         total_failed += failed;
 
