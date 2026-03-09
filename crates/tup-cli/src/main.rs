@@ -787,8 +787,9 @@ fn expand_rules_for_dir(
 
         // Check for missing explicit inputs (non-glob, non-declared)
         // Matches C tup parser.c:2746-2757: "Explicitly named file not found"
+        // Skip cross-directory paths (containing ..) as they reference other dirs
         for input in &rule.inputs {
-            if !tup_parser::is_glob(input) && !input.is_empty() {
+            if !tup_parser::is_glob(input) && !input.is_empty() && !input.contains("..") {
                 let on_disk = work_dir.join(input).exists();
                 let in_declared = declared_outputs.contains(input);
                 if !on_disk && !in_declared {
@@ -800,9 +801,9 @@ fn expand_rules_for_dir(
             }
         }
 
-        // Check order-only inputs too
+        // Check order-only inputs too (skip cross-directory)
         for oo_input in &rule.order_only_inputs {
-            if !tup_parser::is_glob(oo_input) && !oo_input.is_empty() {
+            if !tup_parser::is_glob(oo_input) && !oo_input.is_empty() && !oo_input.contains("..") {
                 let on_disk = work_dir.join(oo_input).exists();
                 let in_declared = declared_outputs.contains(oo_input);
                 if !on_disk && !in_declared {
