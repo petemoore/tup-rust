@@ -331,6 +331,51 @@ impl TupFuseFs {
         let num = FILENUM.fetch_add(1, Ordering::SeqCst);
         self.tup_top.join(format!("{TUP_TMP}/{num:x}"))
     }
+
+    /// Record a file access for a given inode.
+    ///
+    /// Port of C tup's tup_fuse_handle_file() (fuse_fs.c:296-317).
+    /// Determines the job ID from the inode's path, looks up the FileInfo,
+    /// and records the access.
+    fn record_access(&self, ino: u64, at: tup_types::AccessType) {
+        let path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let path_str = path.to_string_lossy();
+
+        // Extract job ID from the path (if it contains @tupjob-N)
+        let job_id = if let Some(idx) = path_str.find(TUP_JOB) {
+            let after = &path_str[idx + TUP_JOB.len()..];
+            let end = after.find('/').unwrap_or(after.len());
+            after[..end].parse::<i64>().ok()
+        } else {
+            None
+        };
+
+        let job_id = match job_id {
+            Some(id) => id,
+            None => return, // Not a job path, skip
+        };
+
+        // Get the peeled path (relative to project root)
+        let full_path = format!("/{}", path_str.trim_start_matches('/'));
+        let peeled = Self::peel(&full_path);
+        let peeled = peeled.trim_start_matches('/');
+
+        // Skip hidden and system paths
+        if Self::is_hidden(peeled) || Self::should_ignore(&format!("/{peeled}")) {
+            return;
+        }
+
+        // Look up the job's FileInfo and record the access
+        if let Some(finfo) = self.jobs.read().unwrap().get(&job_id) {
+            if let Ok(mut finfo) = finfo.lock() {
+                finfo.handle_open_file(at, peeled);
+            }
+        }
+    }
 }
 
 /// Convert SystemTime to UNIX timestamp.
@@ -453,6 +498,8 @@ impl Filesystem for TupFuseFs {
         match std::fs::symlink_metadata(&path) {
             Ok(meta) => {
                 let attr = metadata_to_attr(ino, &meta);
+                // C: tup_fuse_handle_file(path, stripped, ACCESS_READ)
+                self.record_access(ino, tup_types::AccessType::Read);
                 reply.attr(&TTL, &attr);
             }
             Err(_) => {
@@ -522,24 +569,14 @@ impl Filesystem for TupFuseFs {
     /// Open a file.
     /// Port of C tup's tup_fs_open() (fuse_fs.c).
     fn open(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
-        let path = match self.inode_path(ino) {
-            Some(p) => p,
-            None => {
-                reply.error(libc::ENOENT);
-                return;
-            }
-        };
-
-        // Track the read access
-        let rel_path = path
-            .strip_prefix(&self.tup_top)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .to_string();
-        if !Self::is_hidden(&rel_path) && !Self::should_ignore(&rel_path) {
-            // TODO: Record access in the job's FileInfo when FUSE is
-            // wired into the updater execution path (WP6)
+        if self.inode_path(ino).is_none() {
+            reply.error(libc::ENOENT);
+            return;
         }
+
+        // Record the read access in the job's FileInfo
+        // C: tup_fuse_handle_file(path, stripped, ACCESS_READ)
+        self.record_access(ino, tup_types::AccessType::Read);
 
         // Return FH=0, let kernel handle the actual FD
         reply.opened(0, 0);
@@ -666,6 +703,8 @@ impl Filesystem for TupFuseFs {
         match std::fs::File::create(&child_path) {
             Ok(_) => {
                 let ino = self.get_or_create_inode(&child_path);
+                // Record write access (C: tup_fuse_handle_file(path, NULL, ACCESS_WRITE))
+                self.record_access(ino, tup_types::AccessType::Write);
                 match std::fs::symlink_metadata(&child_path) {
                     Ok(meta) => {
                         let attr = metadata_to_attr(ino, &meta);
@@ -806,6 +845,10 @@ impl Filesystem for TupFuseFs {
         };
 
         let child_path = parent_path.join(name);
+
+        // Record unlink access before removing
+        let ino = self.get_or_create_inode(&child_path);
+        self.record_access(ino, tup_types::AccessType::Unlink);
 
         match std::fs::remove_file(&child_path) {
             Ok(_) => reply.ok(),
@@ -1078,5 +1121,45 @@ mod tests {
         let mut finfo = FileInfo::new();
         finfo.add_mapping("/.git/config", tmp.path());
         assert!(finfo.write_list.is_empty()); // .git is hidden
+    }
+
+    #[test]
+    fn test_record_access_with_job() {
+        // Verify that record_access routes to the correct job's FileInfo
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = TupFuseFs::new(tmp.path());
+
+        // Register a job
+        let finfo = std::sync::Arc::new(std::sync::Mutex::new(FileInfo::new()));
+        fs.add_job(42, finfo.clone());
+
+        // Create a path that looks like @tupjob-42/src/foo.c
+        let job_path = tmp.path().join("@tupjob-42").join("src").join("foo.c");
+        let ino = fs.get_or_create_inode(&job_path);
+
+        // Record a read access
+        fs.record_access(ino, tup_types::AccessType::Read);
+
+        // Verify it was recorded in the job's FileInfo
+        let fi = finfo.lock().unwrap();
+        assert_eq!(fi.read_list.len(), 1);
+        assert!(fi.read_list[0].contains("foo.c"));
+    }
+
+    #[test]
+    fn test_record_access_hidden_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fs = TupFuseFs::new(tmp.path());
+
+        let finfo = std::sync::Arc::new(std::sync::Mutex::new(FileInfo::new()));
+        fs.add_job(1, finfo.clone());
+
+        // Access to .git should be skipped
+        let git_path = tmp.path().join("@tupjob-1").join(".git").join("config");
+        let ino = fs.get_or_create_inode(&git_path);
+        fs.record_access(ino, tup_types::AccessType::Read);
+
+        let fi = finfo.lock().unwrap();
+        assert!(fi.read_list.is_empty()); // .git is hidden
     }
 }
