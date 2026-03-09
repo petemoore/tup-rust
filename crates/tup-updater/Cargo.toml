@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 crossbeam = { workspace = true }
 rayon = { workspace = true }
 log = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
