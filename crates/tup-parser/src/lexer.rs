@@ -44,6 +44,8 @@ pub enum TupfileLine {
     Else,
     /// Endif
     Endif,
+    /// Unknown/unrecognized line (error if in active branch, ignored in inactive)
+    Unknown(String),
 }
 
 /// Reader that parses a Tupfile into lines.
@@ -147,19 +149,42 @@ impl TupfileReader {
         // Clone lines to allow mutable access to self during iteration
         let lines = self.lines.clone();
 
+        const MAX_IF_DEPTH: usize = 8;
+
         for parsed in &lines {
             match &parsed.content {
                 TupfileLine::Ifdef(var) => {
+                    if if_stack.len() >= MAX_IF_DEPTH {
+                        return Err(ParseError::Syntax {
+                            file: String::new(),
+                            line: parsed.line_number,
+                            message: "too many nested if statements".to_string(),
+                        });
+                    }
                     let is_active = if_stack.last().copied().unwrap_or(true);
                     let defined = is_active && self.vars.get(var).is_some();
                     if_stack.push(defined);
                 }
                 TupfileLine::Ifndef(var) => {
+                    if if_stack.len() >= MAX_IF_DEPTH {
+                        return Err(ParseError::Syntax {
+                            file: String::new(),
+                            line: parsed.line_number,
+                            message: "too many nested if statements".to_string(),
+                        });
+                    }
                     let is_active = if_stack.last().copied().unwrap_or(true);
                     let defined = is_active && self.vars.get(var).is_some();
                     if_stack.push(!defined);
                 }
                 TupfileLine::Ifeq(a, b) => {
+                    if if_stack.len() >= MAX_IF_DEPTH {
+                        return Err(ParseError::Syntax {
+                            file: String::new(),
+                            line: parsed.line_number,
+                            message: "too many nested if statements".to_string(),
+                        });
+                    }
                     let is_active = if_stack.last().copied().unwrap_or(true);
                     let eq = if is_active {
                         let ea = self.vars.expand(a);
@@ -171,6 +196,13 @@ impl TupfileReader {
                     if_stack.push(eq);
                 }
                 TupfileLine::Ifneq(a, b) => {
+                    if if_stack.len() >= MAX_IF_DEPTH {
+                        return Err(ParseError::Syntax {
+                            file: String::new(),
+                            line: parsed.line_number,
+                            message: "too many nested if statements".to_string(),
+                        });
+                    }
                     let is_active = if_stack.last().copied().unwrap_or(true);
                     let eq = if is_active {
                         let ea = self.vars.expand(a);
@@ -184,10 +216,22 @@ impl TupfileReader {
                 TupfileLine::Else => {
                     if let Some(last) = if_stack.last_mut() {
                         *last = !*last;
+                    } else {
+                        return Err(ParseError::Syntax {
+                            file: String::new(),
+                            line: parsed.line_number,
+                            message: "else statement outside of an if block".to_string(),
+                        });
                     }
                 }
                 TupfileLine::Endif => {
-                    if_stack.pop();
+                    if if_stack.pop().is_none() {
+                        return Err(ParseError::Syntax {
+                            file: String::new(),
+                            line: parsed.line_number,
+                            message: "endif statement outside of an if block".to_string(),
+                        });
+                    }
                 }
                 _ => {
                     // Only process if we're in an active branch
@@ -275,7 +319,11 @@ impl TupfileReader {
                                         sub_reader.bangs = self.bangs.clone();
                                         let tuprules_dir = tuprules_path.parent().unwrap_or(dir);
                                         let sub_rules = sub_reader.evaluate_with_dirs(Some(tuprules_dir), Some(root), tf_dir)?;
+                                        let saved_cwd = self.vars.get("TUP_CWD").map(String::from);
                                         self.vars = sub_reader.vars;
+                                        if let Some(cwd) = saved_cwd {
+                                            self.vars.set("TUP_CWD", &cwd);
+                                        }
                                         self.bangs = sub_reader.bangs;
                                         rules.extend(sub_rules);
                                     }
@@ -299,12 +347,24 @@ impl TupfileReader {
                                     sub_reader.bangs = self.bangs.clone();
                                     let include_dir = include_path.parent().unwrap_or(dir);
                                     let sub_rules = sub_reader.evaluate_with_dirs(Some(include_dir), tup_root, tf_dir)?;
-                                    // Merge back any variable changes
+                                    // Merge back any variable changes, but restore TUP_CWD
+                                    // to this file's value (it was overwritten by the include)
+                                    let saved_cwd = self.vars.get("TUP_CWD").map(String::from);
                                     self.vars = sub_reader.vars;
+                                    if let Some(cwd) = saved_cwd {
+                                        self.vars.set("TUP_CWD", &cwd);
+                                    }
                                     self.bangs = sub_reader.bangs;
                                     rules.extend(sub_rules);
                                 }
                             }
+                        }
+                        TupfileLine::Unknown(text) => {
+                            return Err(ParseError::Syntax {
+                                file: String::new(),
+                                line: parsed.line_number,
+                                message: format!("unrecognized line: '{text}'"),
+                            });
                         }
                         _ => {
                             // Export, Import, etc. — handled later
@@ -312,6 +372,15 @@ impl TupfileReader {
                     }
                 }
             }
+        }
+
+        // Check for unclosed if blocks
+        if !if_stack.is_empty() {
+            return Err(ParseError::Syntax {
+                file: String::new(),
+                line: 0,
+                message: "missing endif before EOF".to_string(),
+            });
         }
 
         Ok(rules)
@@ -492,11 +561,9 @@ fn parse_line(line: &str, line_number: usize, filename: &str) -> Result<TupfileL
         return Ok(TupfileLine::VarAssign { name, value });
     }
 
-    Err(ParseError::Syntax {
-        file: filename.to_string(),
-        line: line_number,
-        message: format!("unrecognized line: '{line}'"),
-    })
+    // Return as unknown line — will be rejected during evaluation if in an active branch,
+    // but silently ignored in inactive if/else branches (matching C tup behavior)
+    Ok(TupfileLine::Unknown(line.to_string()))
 }
 
 /// Parse `(A, B)` arguments for ifeq/ifneq.
