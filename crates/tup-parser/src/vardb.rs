@@ -56,10 +56,27 @@ impl ParseVarDb {
         &self.config_vars
     }
 
+    /// Get all variables (for multi-pass expansion in the caller).
+    pub fn all_vars(&self) -> &BTreeMap<String, String> {
+        &self.vars
+    }
+
     /// Expand all `$(VAR)` references in a string.
     ///
     /// Returns the expanded string. Unknown variables expand to empty string.
+    /// Variables whose names contain `%` are deferred (left as `$(VAR)`) since
+    /// they need %-flag expansion first (multi-pass expansion like C's do_rule).
     pub fn expand(&self, input: &str) -> String {
+        self.expand_internal(input, true)
+    }
+
+    /// Expand all `$(VAR)` references without deferring %-containing names.
+    /// Used for the second pass after %-flags have been expanded.
+    pub fn expand_no_defer(&self, input: &str) -> String {
+        self.expand_internal(input, false)
+    }
+
+    fn expand_internal(&self, input: &str, defer_percent: bool) -> String {
         let mut result = String::with_capacity(input.len());
         let mut chars = input.chars().peekable();
 
@@ -98,8 +115,13 @@ impl ParseVarDb {
                         var_name.push(c);
                     }
                 }
-                // Expand the variable
-                if let Some(value) = self.vars.get(&var_name) {
+                // Defer expansion if variable name contains % and we're in first pass
+                if defer_percent && var_name.contains('%') {
+                    result.push_str("$(");
+                    result.push_str(&var_name);
+                    result.push(')');
+                } else if let Some(value) = self.vars.get(&var_name) {
+                    // Expand the variable
                     result.push_str(value);
                 }
                 // Unknown variables expand to empty string

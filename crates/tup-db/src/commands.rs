@@ -72,6 +72,7 @@ pub fn store_rules(
 
         // Create or find the CMD node
         let existing = db.node_select(dir_id, &cmd_name)?;
+        let was_existing = existing.is_some();
         let cmd_id = match existing {
             Some(row) if row.node_type == NodeType::Cmd => {
                 // Command exists — check if it changed
@@ -120,6 +121,27 @@ pub fn store_rules(
                 id
             }
         };
+
+        // Clean up old links for existing CMDs before creating new ones.
+        // This matches C tup's tup_db_write_outputs()/tup_db_write_inputs()
+        // which reconcile old links with new ones on each parse.
+        if was_existing {
+            // Remove old CMD → output normal links
+            let old_output_ids = db.get_normal_outputs(cmd_id)?;
+            for old_out_id in &old_output_ids {
+                db.link_remove(cmd_id, *old_out_id, LinkType::Normal)?;
+            }
+            // Remove old input → CMD sticky links
+            let old_sticky_ids = db.get_sticky_inputs(cmd_id)?;
+            for old_in_id in &old_sticky_ids {
+                db.link_remove(*old_in_id, cmd_id, LinkType::Sticky)?;
+            }
+            // Remove old input → CMD normal links
+            let old_normal_ids = db.get_normal_inputs(cmd_id)?;
+            for old_in_id in &old_normal_ids {
+                db.link_remove(*old_in_id, cmd_id, LinkType::Normal)?;
+            }
+        }
 
         // Create links for regular inputs: input_node → CMD (STICKY)
         // C tup uses STICKY links for declared inputs (from Tupfile rules).
@@ -229,12 +251,17 @@ pub fn store_rules(
     // Also collects stale output files for disk deletion by the caller.
     let active_cmd_ids: std::collections::HashSet<TupId> =
         stored.iter().map(|s| s.cmd_id).collect();
+    // Collect all active output names for orphan detection
+    let active_outputs: std::collections::HashSet<&str> = rules
+        .iter()
+        .flat_map(|r| r.outputs.iter().chain(r.extra_outputs.iter()))
+        .map(|s| s.as_str())
+        .collect();
     let existing_nodes = db.node_select_dir(dir_id)?;
-    for row in existing_nodes {
+    for row in &existing_nodes {
         if row.node_type == NodeType::Cmd && !active_cmd_ids.contains(&row.id) {
             // Stale command — find and remove its generated outputs too
-            let output_nodes = db.node_select_dir(dir_id)?;
-            for output in &output_nodes {
+            for output in &existing_nodes {
                 if output.node_type == NodeType::Generated && output.srcid == row.id.raw() {
                     // Track for disk deletion
                     stale_outputs.push(output.name.clone());
@@ -243,6 +270,18 @@ pub fn store_rules(
                 }
             }
             // Remove the command node and its links
+            db.link_delete_all(row.id)?;
+            db.node_delete(row.id)?;
+        }
+    }
+    // Clean up orphaned Generated nodes: nodes that were outputs of a
+    // still-active CMD but are no longer in its output list (CMD changed outputs).
+    for row in &existing_nodes {
+        if row.node_type == NodeType::Generated
+            && active_cmd_ids.contains(&TupId::new(row.srcid))
+            && !active_outputs.contains(row.name.as_str())
+        {
+            stale_outputs.push(row.name.clone());
             db.link_delete_all(row.id)?;
             db.node_delete(row.id)?;
         }

@@ -64,6 +64,7 @@ pub fn parse_lua_tupfile(
                 extra_outputs,
                 line_number: 0,
                 had_inputs,
+                vars_snapshot: None,
             };
 
             rules_clone.lock().unwrap().push(rule);
@@ -155,6 +156,7 @@ pub fn parse_lua_tupfile(
                 extra_outputs: vec![],
                 line_number: 0,
                 had_inputs,
+                vars_snapshot: None,
             };
 
             rules_clone2.lock().unwrap().push(rule);
@@ -212,6 +214,7 @@ pub fn parse_lua_tupfile(
                 extra_outputs: vec![],
                 line_number: 0,
                 had_inputs,
+                vars_snapshot: None,
             };
 
             rules_clone3.lock().unwrap().push(rule);

@@ -179,6 +179,7 @@ impl BangDb {
             extra_outputs: mac.extra_outputs.clone(),
             line_number,
             had_inputs,
+            vars_snapshot: None,
         })
     }
 

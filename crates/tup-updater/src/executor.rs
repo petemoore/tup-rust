@@ -727,6 +727,7 @@ mod tests {
             extra_outputs: vec![],
             line_number: 1,
             had_inputs: !inputs.is_empty(),
+            vars_snapshot: None,
         }
     }
 
@@ -744,6 +745,7 @@ mod tests {
             extra_outputs: vec![],
             line_number: 1,
             had_inputs: !inputs.is_empty(),
+            vars_snapshot: None,
         }
     }
 
@@ -936,6 +938,7 @@ mod tests {
             extra_outputs: vec![],
             line_number: 1,
             had_inputs: false,
+            vars_snapshot: None,
         };
 
         let results = updater.execute_rule(&rule).unwrap();

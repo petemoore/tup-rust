@@ -329,7 +329,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
                     let parse_result =
                         parse_tupfile_any(&tupfile_path, tupfile_dir, tup_root, &filename, config)?;
                     let rules = parse_result.rules;
-                    let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
+                    let expanded = expand_rules_for_dir(&rules, tupfile_dir, &parse_result.vars)?;
 
                     if parse_result.gitignore {
                         let outputs: Vec<String> = expanded
@@ -561,6 +561,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             extra_outputs: vec![],
             line_number: 0,
             had_inputs: !cmd.inputs.is_empty(),
+            vars_snapshot: None,
         };
         dir_rule_groups
             .entry(dir_path.clone())
@@ -892,7 +893,7 @@ fn cmd_parse() -> anyhow::Result<()> {
         let parse_result =
             parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
         let rules = parse_result.rules;
-        let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
+        let expanded = expand_rules_for_dir(&rules, tupfile_dir, &parse_result.vars)?;
 
         // Find the dir_id for this directory
         let dir_rel = tupfile_dir.strip_prefix(&tup_root).unwrap_or(Path::new(""));
@@ -1005,7 +1006,13 @@ fn cmd_graph() -> anyhow::Result<()> {
 fn expand_rules_for_dir(
     rules: &[tup_parser::Rule],
     work_dir: &Path,
+    vars: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<Vec<tup_parser::Rule>> {
+    // Build a variable database for second-pass expansion of $(var_%B) etc.
+    // In C tup, do_rule() does: tup_printf() (%-flags) → eval() ($-vars).
+    // Our parser defers $(var_%B) during first pass since it contains %.
+    // After %-expansion here, we do a second $-expansion pass.
+    let _global_vars = vars;
     let mut expanded = Vec::new();
     // Track declared outputs from prior rules for glob resolution
     let mut declared_outputs: Vec<String> = Vec::new();
@@ -1021,6 +1028,19 @@ fn expand_rules_for_dir(
         if rule.had_inputs && rule.inputs.is_empty() {
             continue;
         }
+
+        // Build per-rule vardb for second-pass expansion.
+        // Uses the rule's vars_snapshot (captured at parse time) if available,
+        // otherwise falls back to global vars. This ensures $(var_%B) uses
+        // the variable state at the time the rule was parsed, not the final state.
+        let vardb = {
+            let mut vdb = tup_parser::ParseVarDb::new();
+            let source = rule.vars_snapshot.as_ref().unwrap_or(_global_vars);
+            for (k, v) in source {
+                vdb.set(k, v);
+            }
+            vdb
+        };
 
         // Expand input globs against filesystem + declared outputs
         let matched_inputs = expand_globs_with_declared(&rule.inputs, work_dir, &declared_outputs)?;
@@ -1094,7 +1114,7 @@ fn expand_rules_for_dir(
                 }
 
                 // Expand % in command
-                let cmd = tup_parser::expand_percent(
+                let cmd_percent = tup_parser::expand_percent(
                     &rule.command.command,
                     std::slice::from_ref(&input),
                     &outputs,
@@ -1102,6 +1122,13 @@ fn expand_rules_for_dir(
                     &dir_name,
                 )
                 .map_err(anyhow::Error::msg)?;
+                // Second pass: expand $(var) after %-flags resolved (C: tup_printf → eval)
+                // Only run when rule had deferred variables (names containing %)
+                let cmd = if rule.vars_snapshot.is_some() {
+                    vardb.expand_no_defer(&cmd_percent)
+                } else {
+                    cmd_percent
+                };
 
                 // Expand % in display string if present
                 let display = rule
@@ -1118,7 +1145,14 @@ fn expand_rules_for_dir(
                         )
                     })
                     .transpose()
-                    .map_err(anyhow::Error::msg)?;
+                    .map_err(anyhow::Error::msg)?
+                    .map(|d| {
+                        if rule.vars_snapshot.is_some() {
+                            vardb.expand_no_defer(&d)
+                        } else {
+                            d
+                        }
+                    });
 
                 // Track these outputs for later rules
                 declared_outputs.extend(outputs.clone());
@@ -1136,6 +1170,7 @@ fn expand_rules_for_dir(
                     extra_outputs: rule.extra_outputs.clone(),
                     line_number: rule.line_number,
                     had_inputs: true,
+                    vars_snapshot: None,
                 });
             }
         } else {
@@ -1167,7 +1202,7 @@ fn expand_rules_for_dir(
                 tup_parser::validate_output_path(out).map_err(anyhow::Error::msg)?;
             }
 
-            let cmd = tup_parser::expand_percent(
+            let cmd_percent = tup_parser::expand_percent(
                 &rule.command.command,
                 &inputs,
                 &outputs,
@@ -1175,6 +1210,12 @@ fn expand_rules_for_dir(
                 &dir_name,
             )
             .map_err(anyhow::Error::msg)?;
+            // Second pass: expand $(var) after %-flags resolved (C: tup_printf → eval)
+            let cmd = if rule.vars_snapshot.is_some() {
+                vardb.expand_no_defer(&cmd_percent)
+            } else {
+                cmd_percent
+            };
 
             let display = rule
                 .command
@@ -1190,7 +1231,14 @@ fn expand_rules_for_dir(
                     )
                 })
                 .transpose()
-                .map_err(anyhow::Error::msg)?;
+                .map_err(anyhow::Error::msg)?
+                .map(|d| {
+                    if rule.vars_snapshot.is_some() {
+                        vardb.expand_no_defer(&d)
+                    } else {
+                        d
+                    }
+                });
 
             // Track these outputs for later rules
             declared_outputs.extend(outputs.clone());
@@ -1208,6 +1256,7 @@ fn expand_rules_for_dir(
                 extra_outputs: rule.extra_outputs.clone(),
                 line_number: rule.line_number,
                 had_inputs: rule.had_inputs,
+                vars_snapshot: None,
             });
         }
     }
@@ -1368,6 +1417,8 @@ fn simple_glob_recursive(pattern: &[char], pi: usize, text: &[char], ti: usize) 
 struct ParseResult {
     rules: Vec<tup_parser::Rule>,
     gitignore: bool,
+    /// Variables defined in the Tupfile (for multi-pass expansion of $(var_%B) etc.)
+    vars: std::collections::BTreeMap<String, String>,
 }
 
 /// Simple string hash for change detection.
@@ -1442,6 +1493,7 @@ fn parse_tupfile_any(
         Ok(ParseResult {
             rules,
             gitignore: false,
+            vars: std::collections::BTreeMap::new(),
         })
     } else {
         let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
@@ -1454,7 +1506,12 @@ fn parse_tupfile_any(
         }
         let rules = reader.evaluate_with_dirs(Some(tupfile_dir), Some(tup_root), None)?;
         let gitignore = reader.gitignore_requested();
-        Ok(ParseResult { rules, gitignore })
+        let vars = reader.all_vars().clone();
+        Ok(ParseResult {
+            rules,
+            gitignore,
+            vars,
+        })
     }
 }
 

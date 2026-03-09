@@ -492,6 +492,21 @@ impl TupfileReader {
     /// This matches C tup's eval_path_list() which splits expanded
     /// variables with strcspn(p, " \t") (parser.c:2452-2471).
     fn expand_rule_vars(&self, rule: &Rule) -> Rule {
+        // Check if any component contains $(var_%...) patterns that need
+        // deferred expansion. If so, snapshot the variable state for
+        // second-pass expansion after %-flags are resolved.
+        let needs_deferred = rule.command.command.contains("$(")
+            && rule.command.command.contains('%')
+            || rule
+                .command
+                .display
+                .as_ref()
+                .is_some_and(|d| d.contains("$(") && d.contains('%'));
+        let vars_snapshot = if needs_deferred {
+            Some(self.vars.all_vars().clone())
+        } else {
+            None
+        };
         Rule {
             foreach: rule.foreach,
             inputs: expand_and_split(&self.vars, &rule.inputs),
@@ -505,6 +520,7 @@ impl TupfileReader {
             extra_outputs: expand_and_split(&self.vars, &rule.extra_outputs),
             line_number: rule.line_number,
             had_inputs: rule.had_inputs,
+            vars_snapshot,
         }
     }
 
@@ -526,6 +542,12 @@ impl TupfileReader {
     /// Whether the `.gitignore` directive was found during evaluation.
     pub fn gitignore_requested(&self) -> bool {
         self.gitignore_requested
+    }
+
+    /// Get all variables after evaluation (for multi-pass expansion).
+    /// Returns both regular and config variables.
+    pub fn all_vars(&self) -> &std::collections::BTreeMap<String, String> {
+        self.vars.all_vars()
     }
 }
 
