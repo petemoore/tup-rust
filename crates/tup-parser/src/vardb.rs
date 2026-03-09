@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Default, Clone)]
 pub struct ParseVarDb {
     vars: BTreeMap<String, String>,
+    /// Config variables from tup.config, expanded via @(VAR)
+    config_vars: BTreeMap<String, String>,
 }
 
 impl ParseVarDb {
@@ -37,6 +39,21 @@ impl ParseVarDb {
     /// Get a variable value.
     pub fn get(&self, name: &str) -> Option<&str> {
         self.vars.get(name).map(|s| s.as_str())
+    }
+
+    /// Set a config variable (from tup.config).
+    pub fn set_config(&mut self, name: &str, value: &str) {
+        self.config_vars.insert(name.to_string(), value.to_string());
+    }
+
+    /// Get a config variable value.
+    pub fn get_config(&self, name: &str) -> Option<&str> {
+        self.config_vars.get(name).map(|s| s.as_str())
+    }
+
+    /// Get all config variables (for writing vardict).
+    pub fn config_vars(&self) -> &BTreeMap<String, String> {
+        &self.config_vars
     }
 
     /// Expand all `$(VAR)` references in a string.
@@ -86,6 +103,20 @@ impl ParseVarDb {
                     result.push_str(value);
                 }
                 // Unknown variables expand to empty string
+            } else if ch == '@' && chars.peek() == Some(&'(') {
+                // Config variable: @(VAR)
+                chars.next(); // consume '('
+                let mut var_name = String::new();
+                for c in chars.by_ref() {
+                    if c == ')' {
+                        break;
+                    }
+                    var_name.push(c);
+                }
+                if let Some(value) = self.config_vars.get(&var_name) {
+                    result.push_str(value);
+                }
+                // Unknown config variables expand to empty string
             } else {
                 result.push(ch);
             }

@@ -470,6 +470,11 @@ impl TupfileReader {
         self.lines.iter().map(|pl| (pl.line_number, &pl.content))
     }
 
+    /// Set a config variable for @(VAR) expansion.
+    pub fn set_config(&mut self, name: &str, value: &str) {
+        self.vars.set_config(name, value);
+    }
+
     /// Whether the `.gitignore` directive was found during evaluation.
     pub fn gitignore_requested(&self) -> bool {
         self.gitignore_requested

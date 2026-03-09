@@ -234,6 +234,10 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         }
     }
 
+    // Load config variables from tup.config
+    let config = load_config_vars(&tup_root);
+    write_vardict(&tup_root, &config);
+
     // Phase 2: Parse Tupfiles and store commands in database
     let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -252,7 +256,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
             let filename = tupfile_rel.to_string_lossy();
 
-            let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+            let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
             let rules = parse_result.rules;
             let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
 
@@ -339,7 +343,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         let tupfile_path = tup_root.join(tupfile_rel);
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
-        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
             let rules = parse_result.rules;
         let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
         for rule in expanded {
@@ -390,7 +394,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
 
             if let Ok(dir_id) = resolve_dir_id(&db, dir_rel) {
                 let filename = tupfile_rel.to_string_lossy();
-                if let Ok(pr) = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename) {
+                if let Ok(pr) = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config) {
                     let expanded = expand_rules_for_dir(&pr.rules, tupfile_dir).unwrap_or_default();
                     for rule in &expanded {
                         // Find the CMD node for this rule
@@ -633,6 +637,9 @@ fn cmd_parse() -> anyhow::Result<()> {
     let tup_root = tup_platform::init::find_tup_dir(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .tup directory found. Run 'tup init' first."))?;
 
+    let config = load_config_vars(&tup_root);
+    write_vardict(&tup_root, &config);
+
     // Phase 1: Scan filesystem and sync to database
     let db = tup_db::TupDb::open(&tup_root, false)?;
     let mut cache = tup_db::EntryCache::new();
@@ -662,7 +669,7 @@ fn cmd_parse() -> anyhow::Result<()> {
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
 
-        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
             let rules = parse_result.rules;
         let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
 
@@ -721,6 +728,8 @@ fn cmd_graph() -> anyhow::Result<()> {
     let tup_root = tup_platform::init::find_tup_dir(&cwd)
         .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
 
+    let config = load_config_vars(&tup_root);
+
     let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -734,7 +743,7 @@ fn cmd_graph() -> anyhow::Result<()> {
             .to_string();
 
         let filename = tupfile_rel.to_string_lossy();
-        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
         let rules = parse_result.rules;
 
         for rule in rules {
@@ -1087,12 +1096,49 @@ struct ParseResult {
     gitignore: bool,
 }
 
+/// Load config variables from tup.config file.
+fn load_config_vars(tup_root: &Path) -> std::collections::BTreeMap<String, String> {
+    let config_path = tup_root.join("tup.config");
+    let mut vars = std::collections::BTreeMap::new();
+
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with("CONFIG_") {
+                // CONFIG_VAR=value
+                if let Some((key, value)) = line.split_once('=') {
+                    let var_name = key.strip_prefix("CONFIG_").unwrap_or(key);
+                    vars.insert(var_name.to_string(), value.to_string());
+                }
+            } else if line.starts_with("# CONFIG_") && line.ends_with(" is not set") {
+                // # CONFIG_VAR is not set → var exists with value "n"
+                let rest = line.strip_prefix("# CONFIG_").unwrap();
+                let var_name = rest.strip_suffix(" is not set").unwrap_or(rest);
+                vars.insert(var_name.to_string(), "n".to_string());
+            }
+        }
+    }
+
+    vars
+}
+
+/// Write vardict file (parsed config variables for test framework).
+fn write_vardict(tup_root: &Path, config: &std::collections::BTreeMap<String, String>) {
+    let vardict_path = tup_root.join(".tup").join("vardict");
+    let mut lines = Vec::new();
+    for (k, v) in config {
+        lines.push(format!("{k}={v}"));
+    }
+    let _ = std::fs::write(vardict_path, lines.join("\n") + "\n");
+}
+
 /// Parse a Tupfile (either standard or Lua) and return rules + metadata.
 fn parse_tupfile_any(
     tupfile_path: &Path,
     tupfile_dir: &Path,
     tup_root: &Path,
     filename: &str,
+    config: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<ParseResult> {
     let content = std::fs::read_to_string(tupfile_path)?;
 
@@ -1102,6 +1148,10 @@ fn parse_tupfile_any(
         Ok(ParseResult { rules, gitignore: false })
     } else {
         let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
+        // Load config variables for @(VAR) expansion
+        for (k, v) in config {
+            reader.set_config(k, v);
+        }
         let rules = reader.evaluate_with_dirs(Some(tupfile_dir), Some(tup_root), None)?;
         let gitignore = reader.gitignore_requested();
         Ok(ParseResult { rules, gitignore })
