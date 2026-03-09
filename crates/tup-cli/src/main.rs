@@ -338,6 +338,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
                             inputs: r.inputs.clone(),
                             order_only_inputs: r.order_only_inputs.clone(),
                             outputs: r.outputs.clone(),
+                            extra_outputs: r.extra_outputs.clone(),
                             display: r.command.display.clone(),
                             flags: r.command.flags.clone(),
                         })
@@ -846,6 +847,7 @@ fn cmd_parse() -> anyhow::Result<()> {
                 inputs: r.inputs.clone(),
                 order_only_inputs: r.order_only_inputs.clone(),
                 outputs: r.outputs.clone(),
+                extra_outputs: r.extra_outputs.clone(),
                 display: r.command.display.clone(),
                 flags: r.command.flags.clone(),
             })
