@@ -17,7 +17,7 @@ mod vardb;
 mod variant;
 
 pub use commands::{
-    get_modified_commands, mark_command_done, store_rules, RuleToStore, StoredCommand,
+    get_modified_commands, mark_command_done, store_rules, RuleToStore, StoreResult, StoredCommand,
 };
 pub use entry::{EntryCache, TupEntry};
 pub use error::DbError;

@@ -191,9 +191,9 @@ fn sync_dir(
             // File/dir exists in DB but not on filesystem
             match row.node_type {
                 NodeType::File => {
-                    db.flag_add(row.id, TupFlags::Modify)?;
-                    // Don't delete yet — let the updater handle it
-                    // after re-parsing affected Tupfiles
+                    // File deleted from disk — remove from DB
+                    // (matches C tup's delete_file() behavior)
+                    db.node_delete(row.id)?;
                     result.files_deleted += 1;
                 }
                 NodeType::Dir => {
