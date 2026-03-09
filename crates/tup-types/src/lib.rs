@@ -13,6 +13,7 @@ mod error;
 mod flags;
 mod link_type;
 mod node_type;
+pub mod percent;
 mod tupid;
 
 pub use access_event::AccessType;
@@ -21,4 +22,5 @@ pub use error::TupError;
 pub use flags::{FlagSet, TupFlags};
 pub use link_type::LinkType;
 pub use node_type::NodeType;
+pub use percent::{expand_output_pattern, expand_percent, validate_output_path, InputFile};
 pub use tupid::TupId;
