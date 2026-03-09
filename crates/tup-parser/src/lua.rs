@@ -18,11 +18,24 @@ pub fn parse_lua_tupfile(
     content: &str,
     filename: &str,
     work_dir: &Path,
-    _db: &dyn tup_types::ParserDb, // TODO: wire into tup.nodevariable(), tup.run()
+    db: &dyn tup_types::ParserDb,
 ) -> Result<Vec<Rule>, String> {
     let lua = Lua::new();
     let rules = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Rule>::new()));
     let work_dir_owned = work_dir.to_path_buf();
+
+    // Pre-fetch all node data for Lua closures (closures need 'static, can't borrow db).
+    // C tup queries the DB dynamically during parsing, but since our Lua closures
+    // can't hold a &db reference, we snapshot the data we need upfront.
+    let all_nodes: std::collections::BTreeMap<String, tup_types::ParserNode> = {
+        let mut map = std::collections::BTreeMap::new();
+        for name in db.list_dir_files() {
+            if let Some(node) = db.node_lookup_in_dir(&name) {
+                map.insert(name, node);
+            }
+        }
+        map
+    };
 
     // Create the tup table
     let tup_table = lua.create_table().map_err(lua_err)?;
@@ -315,6 +328,75 @@ pub fn parse_lua_tupfile(
         .create_function(|_, _name: String| Ok(()))
         .map_err(lua_err)?;
     tup_table.set("export", export_fn).map_err(lua_err)?;
+
+    // tup.nodevariable(path) — create a node variable reference
+    // C: luaparser.c:tuplua_function_nodevariable() does get_tent_dt() lookup,
+    // validates FILE/DIR type, returns userdata with __tostring metatable.
+    let nodes_for_nv = std::sync::Arc::new(all_nodes);
+    let nodes_clone = nodes_for_nv.clone();
+    let nodevariable_fn = lua
+        .create_function(move |lua_ctx, path: String| {
+            // C: get_tent_dt(tf->curtent->tnode.tupid, name)
+            let node = nodes_clone.get(&path).ok_or_else(|| {
+                mlua::Error::RuntimeError(format!(
+                    "tup error: Unable to find tup entry for file '{}' in node reference declaration.",
+                    path
+                ))
+            })?;
+            // C: validates FILE or DIR type
+            if node.node_type != tup_types::NodeType::File
+                && node.node_type != tup_types::NodeType::Dir
+            {
+                // C: tup_db_type() returns human-readable type names
+                let type_name = match node.node_type {
+                    tup_types::NodeType::File => "normal file",
+                    tup_types::NodeType::Cmd => "command",
+                    tup_types::NodeType::Dir => "directory",
+                    tup_types::NodeType::Generated => "generated file",
+                    tup_types::NodeType::Ghost => "ghost",
+                    tup_types::NodeType::Group => "group",
+                    _ => "unknown",
+                };
+                return Err(mlua::Error::RuntimeError(format!(
+                    "tup error: Node-variables can only refer to normal files and directories, not a '{}'.",
+                    type_name
+                )));
+            }
+            // Create a table with __tostring that returns the path
+            // C: creates userdata + metatable with __tostring and __concat
+            let tbl = lua_ctx.create_table()?;
+            tbl.set("__path", path.clone())?;
+            let mt = lua_ctx.create_table()?;
+            mt.set(
+                "__tostring",
+                lua_ctx.create_function(|_, tbl: LuaTable| {
+                    let p: String = tbl.get("__path")?;
+                    Ok(p)
+                })?,
+            )?;
+            mt.set(
+                "__concat",
+                lua_ctx.create_function(|_, (a, b): (LuaValue, LuaValue)| {
+                    let a_str = match &a {
+                        LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                        LuaValue::Table(t) => t.get::<_, String>("__path").unwrap_or_default(),
+                        _ => format!("{:?}", a),
+                    };
+                    let b_str = match &b {
+                        LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                        LuaValue::Table(t) => t.get::<_, String>("__path").unwrap_or_default(),
+                        _ => format!("{:?}", b),
+                    };
+                    Ok(format!("{}{}", a_str, b_str))
+                })?,
+            )?;
+            tbl.set_metatable(Some(mt));
+            Ok(tbl)
+        })
+        .map_err(lua_err)?;
+    tup_table
+        .set("nodevariable", nodevariable_fn)
+        .map_err(lua_err)?;
 
     // tup.creategitignore()
     let gitignore_fn = lua.create_function(|_, ()| Ok(())).map_err(lua_err)?;
