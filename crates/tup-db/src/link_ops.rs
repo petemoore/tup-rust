@@ -42,19 +42,38 @@ impl TupDb {
         Ok(())
     }
 
-    /// Get all input node IDs that link TO a given node via normal_link.
+    /// Get all input node IDs that link TO a given node via normal_link AND sticky_link.
     ///
     /// For CMD nodes, this returns the input files that the command depends on.
-    /// Port of C tup's normal_link reverse lookup: SELECT from_id FROM normal_link WHERE to_id=?
+    /// In C tup, declared inputs use STICKY links (from input file to CMD).
+    /// Normal links go from CMD to output file.
     pub fn get_input_ids(&self, to_id: TupId) -> DbResult<Vec<TupId>> {
+        // Inputs to commands come via sticky_link (declared deps from Tupfile rules)
         let mut stmt = self
             .conn()
-            .prepare("SELECT from_id FROM normal_link WHERE to_id=?1")?;
+            .prepare("SELECT from_id FROM sticky_link WHERE to_id=?1")?;
         let rows = stmt.query_map(params![to_id.raw()], |row| {
             let id: i64 = row.get(0)?;
             Ok(TupId::new(id))
         })?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        let mut result: Vec<TupId> = rows.collect::<Result<Vec<_>, _>>()?;
+
+        // Also check normal_link for any additional dependencies
+        let mut stmt2 = self
+            .conn()
+            .prepare("SELECT from_id FROM normal_link WHERE to_id=?1")?;
+        let rows2 = stmt2.query_map(params![to_id.raw()], |row| {
+            let id: i64 = row.get(0)?;
+            Ok(TupId::new(id))
+        })?;
+        for id in rows2 {
+            let id = id?;
+            if !result.contains(&id) {
+                result.push(id);
+            }
+        }
+
+        Ok(result)
     }
 
     /// Get the single incoming normal link for a node.
