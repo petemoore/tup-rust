@@ -160,6 +160,13 @@ pub fn store_rules(
                     if row.node_type == NodeType::Ghost {
                         db.node_set_type(row.id, NodeType::Generated)?;
                     }
+                    // Update srcid to point to the current command.
+                    // This handles the case where the same output is produced
+                    // by a different command string (e.g., link command changes
+                    // when source files are added/removed).
+                    if row.srcid != cmd_id.raw() {
+                        db.node_set_srcid(row.id, cmd_id.raw())?;
+                    }
                     row.id
                 }
                 None => {
