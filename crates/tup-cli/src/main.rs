@@ -674,12 +674,31 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         total_run += run;
         total_failed += failed;
 
-        // Unregister FUSE job after execution
+        // Unregister FUSE job and record dependencies in DB
         #[cfg(feature = "fuse")]
-        if let Some((job_id, _finfo)) = _fuse_finfo {
+        if let Some((job_id, finfo)) = _fuse_finfo {
             if let Some(ref fuse) = _fuse_mount {
                 fuse.unregister_job(job_id);
-                // TODO: Call write_files() with finfo to record dependencies in DB
+
+                // Process FUSE-recorded accesses → DB dependency links
+                // C: write_files() after exec_internal() in fuse_server.c
+                if let Ok(mut fi) = finfo.lock() {
+                    // Find the dir_id for this directory
+                    let dir_rel = dir_path.strip_prefix(&tup_root).unwrap_or(Path::new(""));
+                    if let Ok(dir_id) = resolve_dir_id(&db, dir_rel) {
+                        // For each command in this directory, write file accesses
+                        for cmd in &commands_to_run {
+                            let cmd_dir = dir_paths.get(&cmd.dir_id).unwrap();
+                            if cmd_dir == dir_path {
+                                db.begin().ok();
+                                let _ = tup_server::file_db::write_files(
+                                    &db, cmd.cmd_id, dir_id, &mut fi, &tup_root,
+                                );
+                                db.commit().ok();
+                            }
+                        }
+                    }
+                }
             }
         }
     }
