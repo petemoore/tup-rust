@@ -219,3 +219,35 @@ is a living document.
 macOS: `PKG_CONFIG_PATH=/usr/local/lib/pkgconfig` (macFUSE installed)
 Linux: `libfuse-dev` or `libfuse3-dev`
 Feature flag: `--features fuse`
+
+## Progress
+
+| WP | Description | Status | PR |
+|----|-------------|--------|-----|
+| WP1 | File access tracking core | DONE | #88 |
+| WP2a | Filesystem: lookup, getattr, readdir, open, read | DONE | #89 |
+| WP3 | Filesystem: write operations | DONE | #90 |
+| WP4 | Mount/unmount lifecycle | DONE | #91 |
+| WP5 | File access → DB integration | DONE | #92 |
+| WP6 | Wire into command execution | DONE | #93 |
+| WP7 | Master fork process | NOT STARTED | — |
+| WP8 | Linux namespace support | NOT STARTED | — |
+| WP9 | Privilege management | NOT STARTED | — |
+| WP10 | Parser mode FUSE | NOT STARTED | — |
+| WP11 | Additional FUSE operations | NOT STARTED | — |
+
+## What's Working
+
+The FUSE infrastructure is in place:
+- File access tracking (read/write/unlink/var lists, mappings)
+- Full Filesystem trait (lookup, getattr, readdir, open, read, write, create, mknod, mkdir, unlink, rmdir, symlink, rename, link)
+- Mount/unmount lifecycle with macOS support
+- DB integration (write_files connects tracking to dependency links)
+- Wired into tup upd execution path
+
+## What's Next
+
+Per-command job registration needs to connect each command's execution
+to a FileInfo in the FUSE filesystem, so that file accesses during
+execution are recorded to the correct job. This requires modifying
+the updater to use FUSE job paths (@tupjob-N) for command execution.
