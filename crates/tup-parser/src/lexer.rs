@@ -359,6 +359,14 @@ impl TupfileReader {
                                 }
                             }
                         }
+                        TupfileLine::Error(msg) => {
+                            let expanded = self.vars.expand(msg);
+                            return Err(ParseError::Syntax {
+                                file: String::new(),
+                                line: parsed.line_number,
+                                message: format!("Found 'error' command parsing Tupfile: {expanded}"),
+                            });
+                        }
                         TupfileLine::Unknown(text) => {
                             return Err(ParseError::Syntax {
                                 file: String::new(),
