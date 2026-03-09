@@ -411,6 +411,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         dir_id: TupId,
         command: String,
         display: Option<String>,
+        inputs: Vec<String>,
         outputs: Vec<String>,
     }
 
@@ -420,7 +421,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             if row.node_type != tup_types::NodeType::Cmd {
                 continue;
             }
-            // Get outputs for this command from the DB
+            // Get outputs for this command from the DB (Generated nodes with matching srcid)
             let output_nodes = db.node_select_dir(row.dir)?;
             let outputs: Vec<String> = output_nodes
                 .iter()
@@ -430,11 +431,27 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
                 .map(|n| n.name.clone())
                 .collect();
 
+            // Get inputs for this command from normal_link + sticky_link
+            // This is needed for dependency ordering during execution
+            let mut inputs = Vec::new();
+            if let Ok(input_ids) = db.get_input_ids(*cmd_id) {
+                for input_id in input_ids {
+                    if let Ok(Some(input_row)) = db.node_select_by_id(input_id) {
+                        if input_row.node_type == tup_types::NodeType::Generated
+                            || input_row.node_type == tup_types::NodeType::File
+                        {
+                            inputs.push(input_row.name.clone());
+                        }
+                    }
+                }
+            }
+
             commands_to_run.push(CmdToRun {
                 cmd_id: *cmd_id,
                 dir_id: row.dir,
                 command: row.name.clone(),
                 display: row.display.clone(),
+                inputs,
                 outputs,
             });
         }
@@ -459,7 +476,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         let dir_path = dir_paths.get(&cmd.dir_id).unwrap().clone();
         let rule = tup_parser::Rule {
             foreach: false,
-            inputs: vec![],
+            inputs: cmd.inputs.clone(),
             order_only_inputs: vec![],
             command: tup_parser::RuleCommand {
                 command: cmd.command.clone(),
@@ -469,7 +486,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             outputs: cmd.outputs.clone(),
             extra_outputs: vec![],
             line_number: 0,
-            had_inputs: false,
+            had_inputs: !cmd.inputs.is_empty(),
         };
         dir_rule_groups
             .entry(dir_path.clone())
