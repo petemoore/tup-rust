@@ -1350,14 +1350,20 @@ fn expand_rules_for_dir(
     Ok(expanded)
 }
 
-/// Check if an input name refers to an explicit file (not a glob, bin, group, or cross-dir path).
+/// Check if an input name refers to an explicit local file (not a glob, bin, group, or cross-dir path).
 fn is_explicit_file_ref(name: &str) -> bool {
-    !name.is_empty() && !tup_parser::is_glob(name) && !name.contains("..") && !is_group_or_bin(name)
+    !name.is_empty()
+        && !tup_parser::is_glob(name)
+        && !name.contains("..")
+        && !name.contains('/')
+        && !is_group_or_bin(name)
 }
 
 /// Check if a name is a group (<name>) or bin ({name}) reference.
 fn is_group_or_bin(name: &str) -> bool {
-    (name.starts_with('<') && name.ends_with('>')) || (name.starts_with('{') && name.ends_with('}'))
+    (name.starts_with('<') && name.ends_with('>'))
+        || (name.starts_with('{') && name.ends_with('}'))
+        || name.contains('<')
 }
 
 /// Check if a command string contains an unescaped percent pattern.
