@@ -46,6 +46,11 @@ pub struct Updater {
     commands_failed: usize,
     /// Total expected commands (set before execution for progress).
     total_expected: usize,
+    /// Optional file descriptor for FUSE CWD.
+    /// When set, commands use fchdir(fd) instead of chdir(work_dir).
+    /// Port of C tup's virt_tup_open() which opens @tupjob-N via FUSE.
+    #[cfg(unix)]
+    fuse_cwd_fd: Option<i32>,
 }
 
 impl Updater {
@@ -57,7 +62,17 @@ impl Updater {
             commands_run: 0,
             commands_failed: 0,
             total_expected: 0,
+            #[cfg(unix)]
+            fuse_cwd_fd: None,
         }
+    }
+
+    /// Set a FUSE CWD file descriptor.
+    /// When set, commands use fchdir(fd) instead of chdir(path).
+    /// Port of C tup's virt_tup_open() approach.
+    #[cfg(unix)]
+    pub fn set_fuse_cwd_fd(&mut self, fd: i32) {
+        self.fuse_cwd_fd = Some(fd);
     }
 
     /// Set whether to continue after command failures.
@@ -188,12 +203,34 @@ impl Updater {
             "-c"
         };
 
-        let output = Command::new(shell)
+        let mut command = Command::new(shell);
+        command
             .arg(shell_flag)
             .arg(cmd)
-            .current_dir(&self.work_dir)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Use fchdir for FUSE CWD if available, otherwise normal chdir.
+        // C tup: child process does fchdir(root_fd) where root_fd was
+        // opened through .tup/mnt/@tupjob-N/ FUSE path.
+        #[cfg(unix)]
+        if let Some(fd) = self.fuse_cwd_fd {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fchdir(fd) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        } else {
+            command.current_dir(&self.work_dir);
+        }
+        #[cfg(not(unix))]
+        command.current_dir(&self.work_dir);
+
+        let output = command
             .output()
             .map_err(|e| format!("failed to execute command: {e}"))?;
 
