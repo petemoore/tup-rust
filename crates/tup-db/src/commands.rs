@@ -30,6 +30,10 @@ pub struct RuleToStore {
     /// Matches C tup's add_input() with force_normal_file parameter.
     pub order_only_inputs: Vec<String>,
     pub outputs: Vec<String>,
+    /// Extra outputs (after `|` in output section).
+    /// These are order-only outputs that get CMD→output NORMAL links
+    /// but are NOT the primary outputs of the command.
+    pub extra_outputs: Vec<String>,
     pub display: Option<String>,
     pub flags: Option<String>,
 }
@@ -58,6 +62,7 @@ pub fn store_rules(
             inputs,
             order_only_inputs: _,
             outputs,
+            extra_outputs: _,
             display,
             flags,
         } = rule;
@@ -174,6 +179,34 @@ pub fn store_rules(
             db.link_insert(cmd_id, output_id, LinkType::Normal)?;
         }
 
+        // Create extra output nodes and links: CMD → extra_output_node
+        // Extra outputs (after | in output section) are order-only outputs.
+        // They get the same treatment as regular outputs in the DB.
+        for extra_name in &rule.extra_outputs {
+            let extra_id = match db.node_select(dir_id, extra_name)? {
+                Some(row) => {
+                    if row.node_type != NodeType::Generated && row.node_type != NodeType::Ghost {
+                        continue;
+                    }
+                    if row.node_type == NodeType::Ghost {
+                        db.node_set_type(row.id, NodeType::Generated)?;
+                    }
+                    row.id
+                }
+                None => db.node_insert(
+                    dir_id,
+                    extra_name,
+                    NodeType::Generated,
+                    -1,
+                    0,
+                    cmd_id.raw(),
+                    None,
+                    None,
+                )?,
+            };
+            db.link_insert(cmd_id, extra_id, LinkType::Normal)?;
+        }
+
         stored.push(StoredCommand {
             cmd_id,
             command: command.clone(),
@@ -286,6 +319,7 @@ mod tests {
             inputs: vec!["main.c".to_string()],
             order_only_inputs: vec![],
             outputs: vec!["main.o".to_string()],
+            extra_outputs: vec![],
             display: Some("CC main.c".to_string()),
             flags: None,
         }];
@@ -338,6 +372,7 @@ mod tests {
             inputs: vec![],
             order_only_inputs: vec![],
             outputs: vec!["out.txt".to_string()],
+            extra_outputs: vec![],
             display: None,
             flags: None,
         }];
@@ -366,6 +401,7 @@ mod tests {
             inputs: vec![],
             order_only_inputs: vec![],
             outputs: vec![],
+            extra_outputs: vec![],
             display: Some("CC foo.c".to_string()),
             flags: None,
         }];
@@ -378,6 +414,7 @@ mod tests {
             inputs: vec![],
             order_only_inputs: vec![],
             outputs: vec![],
+            extra_outputs: vec![],
             display: Some("COMPILE foo.c".to_string()),
             flags: None,
         }];
@@ -402,6 +439,7 @@ mod tests {
                 inputs: vec![],
                 order_only_inputs: vec![],
                 outputs: vec![],
+                extra_outputs: vec![],
                 display: None,
                 flags: None,
             },
@@ -410,6 +448,7 @@ mod tests {
                 inputs: vec![],
                 order_only_inputs: vec![],
                 outputs: vec![],
+                extra_outputs: vec![],
                 display: None,
                 flags: None,
             },
@@ -432,6 +471,7 @@ mod tests {
             inputs: vec![],
             order_only_inputs: vec![],
             outputs: vec![],
+            extra_outputs: vec![],
             display: None,
             flags: None,
         }];
