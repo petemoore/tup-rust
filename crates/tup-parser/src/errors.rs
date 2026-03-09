@@ -1,17 +1,24 @@
 /// Errors that can occur during Tupfile parsing.
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
-    #[error("{file}:{line}: {message}")]
+    #[error("Syntax error parsing {file} line {line}\n  {message}")]
     Syntax {
         file: String,
         line: usize,
         message: String,
     },
 
-    #[error("{file}: missing endif before EOF")]
+    #[error("Error parsing {file} line {line}\n  {message}")]
+    RuleParse {
+        file: String,
+        line: usize,
+        message: String,
+    },
+
+    #[error("Error parsing {file}: missing endif before EOF.")]
     MissingEndif { file: String },
 
-    #[error("{file}:{line}: {message}")]
+    #[error("Error parsing {file} line {line}\n  {message}")]
     ErrorDirective {
         file: String,
         line: usize,

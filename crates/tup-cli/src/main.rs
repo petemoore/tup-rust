@@ -112,6 +112,16 @@ enum Commands {
     },
     /// Display the server mode
     Server,
+    /// Replace @VAR@ patterns with values from the tup vardict
+    Varsed {
+        /// Use binary mode (y→1, n→0 for single-char values)
+        #[arg(long)]
+        binary: bool,
+        /// Input file (use - for stdin)
+        input: String,
+        /// Output file (use - for stdout)
+        output: String,
+    },
 }
 
 fn main() {
@@ -171,6 +181,11 @@ fn main() {
             cmd_server();
             Ok(())
         }
+        Some(Commands::Varsed {
+            binary,
+            input,
+            output,
+        }) => cmd_varsed_cli(&input, &output, binary),
         Some(_) => {
             eprintln!("Command not yet implemented");
             Ok(())
@@ -1010,7 +1025,13 @@ fn expand_rules_for_dir(
                     .outputs
                     .iter()
                     .map(|pat| tup_parser::expand_output_pattern(pat, &input))
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(anyhow::Error::msg)?;
+
+                // Validate output paths (reject hidden files like .git)
+                for out in &outputs {
+                    tup_parser::validate_output_path(out).map_err(anyhow::Error::msg)?;
+                }
 
                 // Expand % in command
                 let cmd = tup_parser::expand_percent(
@@ -1019,18 +1040,25 @@ fn expand_rules_for_dir(
                     &outputs,
                     &rule.order_only_inputs,
                     &dir_name,
-                );
+                )
+                .map_err(anyhow::Error::msg)?;
 
                 // Expand % in display string if present
-                let display = rule.command.display.as_ref().map(|d| {
-                    tup_parser::expand_percent(
-                        d,
-                        std::slice::from_ref(&input),
-                        &outputs,
-                        &rule.order_only_inputs,
-                        &dir_name,
-                    )
-                });
+                let display = rule
+                    .command
+                    .display
+                    .as_ref()
+                    .map(|d| {
+                        tup_parser::expand_percent(
+                            d,
+                            std::slice::from_ref(&input),
+                            &outputs,
+                            &rule.order_only_inputs,
+                            &dir_name,
+                        )
+                    })
+                    .transpose()
+                    .map_err(anyhow::Error::msg)?;
 
                 // Track these outputs for later rules
                 declared_outputs.extend(outputs.clone());
@@ -1065,13 +1093,19 @@ fn expand_rules_for_dir(
                         if pat.contains('%') {
                             tup_parser::expand_output_pattern(pat, first_input)
                         } else {
-                            pat.clone()
+                            Ok(pat.clone())
                         }
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(anyhow::Error::msg)?
             } else {
                 rule.outputs.clone()
             };
+
+            // Validate output paths (reject hidden files like .git)
+            for out in &outputs {
+                tup_parser::validate_output_path(out).map_err(anyhow::Error::msg)?;
+            }
 
             let cmd = tup_parser::expand_percent(
                 &rule.command.command,
@@ -1079,11 +1113,24 @@ fn expand_rules_for_dir(
                 &outputs,
                 &rule.order_only_inputs,
                 &dir_name,
-            );
+            )
+            .map_err(anyhow::Error::msg)?;
 
-            let display = rule.command.display.as_ref().map(|d| {
-                tup_parser::expand_percent(d, &inputs, &outputs, &rule.order_only_inputs, &dir_name)
-            });
+            let display = rule
+                .command
+                .display
+                .as_ref()
+                .map(|d| {
+                    tup_parser::expand_percent(
+                        d,
+                        &inputs,
+                        &outputs,
+                        &rule.order_only_inputs,
+                        &dir_name,
+                    )
+                })
+                .transpose()
+                .map_err(anyhow::Error::msg)?;
 
             // Track these outputs for later rules
             declared_outputs.extend(outputs.clone());
@@ -1306,6 +1353,17 @@ fn write_vardict(tup_root: &Path, config: &std::collections::BTreeMap<String, St
         lines.push(format!("{k}={v}"));
     }
     let _ = std::fs::write(vardict_path, lines.join("\n") + "\n");
+}
+
+/// CLI handler for `tup varsed [--binary] <input> <output>`.
+///
+/// Reads variables from the vardict (via tup_vardict env var or .tup/vardict),
+/// replaces @VAR@ patterns in the input file, and writes the result.
+fn cmd_varsed_cli(input: &str, output: &str, binmode: bool) -> anyhow::Result<()> {
+    // Try to find the tup root for fallback vardict loading
+    let tup_root = tup_platform::init::find_tup_dir(&std::env::current_dir()?);
+    tup_parser::cmd_varsed(input, output, binmode, tup_root.as_deref())
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Parse a Tupfile (either standard or Lua) and return rules + metadata.

@@ -96,7 +96,7 @@ impl Updater {
                     .outputs
                     .iter()
                     .map(|pat| expand_output_pattern(pat, &input))
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 let cmd = expand_percent(
                     &rule.command.command,
@@ -104,7 +104,7 @@ impl Updater {
                     &outputs,
                     &rule.order_only_inputs,
                     &self.dir_name(),
-                );
+                )?;
 
                 let result =
                     self.execute_command(&cmd, rule.command.display.as_deref(), &outputs)?;
@@ -128,13 +128,13 @@ impl Updater {
                             if let Some(first) = inputs.first() {
                                 expand_output_pattern(pat, first)
                             } else {
-                                pat.clone()
+                                Ok(pat.clone())
                             }
                         } else {
-                            pat.clone()
+                            Ok(pat.clone())
                         }
                     })
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()?
             } else {
                 rule.outputs.clone()
             };
@@ -145,7 +145,7 @@ impl Updater {
                 &outputs,
                 &rule.order_only_inputs,
                 &self.dir_name(),
-            );
+            )?;
 
             let result = self.execute_command(&cmd, rule.command.display.as_deref(), &outputs)?;
             results.push(result);
@@ -335,14 +335,14 @@ impl Updater {
                         .outputs
                         .iter()
                         .map(|pat| expand_output_pattern(pat, &input))
-                        .collect();
+                        .collect::<Result<Vec<_>, _>>()?;
                     let cmd = expand_percent(
                         &rule.command.command,
                         &[input],
                         &outputs,
                         &rule.order_only_inputs,
                         &self.dir_name(),
-                    );
+                    )?;
                     commands.push(ExpandedCommand {
                         cmd,
                         display: rule.command.display.clone(),
@@ -361,12 +361,12 @@ impl Updater {
                                 inputs
                                     .first()
                                     .map(|f| expand_output_pattern(pat, f))
-                                    .unwrap_or_else(|| pat.clone())
+                                    .unwrap_or_else(|| Ok(pat.clone()))
                             } else {
-                                pat.clone()
+                                Ok(pat.clone())
                             }
                         })
-                        .collect()
+                        .collect::<Result<Vec<_>, _>>()?
                 } else {
                     rule.outputs.clone()
                 };
@@ -376,7 +376,7 @@ impl Updater {
                     &outputs,
                     &rule.order_only_inputs,
                     &self.dir_name(),
-                );
+                )?;
                 commands.push(ExpandedCommand {
                     cmd,
                     display: rule.command.display.clone(),
