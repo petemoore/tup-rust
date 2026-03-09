@@ -10,6 +10,14 @@ use tup_types::{NodeType, TupId, DOT_DT};
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Keep going after errors (shorthand for `tup upd -k`)
+    #[arg(short, long, global = true)]
+    keep_going: bool,
+
+    /// Number of parallel jobs (shorthand for `tup upd -j N`)
+    #[arg(short, long, global = true)]
+    jobs: Option<usize>,
 }
 
 #[derive(Subcommand)]
@@ -148,8 +156,8 @@ fn main() {
             keep_going,
             jobs,
             no_scan,
-        }) => cmd_upd(keep_going, jobs, no_scan),
-        None => cmd_upd(false, None, false),
+        }) => cmd_upd(keep_going || cli.keep_going, jobs.or(cli.jobs), no_scan),
+        None => cmd_upd(cli.keep_going, cli.jobs, false),
         Some(Commands::Parse) => cmd_parse(),
         Some(Commands::Version) => {
             cmd_version();
@@ -448,6 +456,20 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     }
 
     let num_jobs = jobs.unwrap_or_else(|| {
+        // Check .tup/options for updater.num_jobs (set by single_threaded in tests)
+        let options_path = tup_root.join(".tup/options");
+        if let Ok(content) = std::fs::read_to_string(&options_path) {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(val) = trimmed.strip_prefix("num_jobs=") {
+                    if let Ok(n) = val.trim().parse::<usize>() {
+                        if n > 0 {
+                            return n;
+                        }
+                    }
+                }
+            }
+        }
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
