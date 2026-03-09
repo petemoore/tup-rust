@@ -367,6 +367,47 @@ impl TupfileReader {
                         TupfileLine::GitIgnore => {
                             self.gitignore_requested = true;
                         }
+                        TupfileLine::Run(script) => {
+                            if let Some(dir) = base_dir {
+                                let expanded_script = self.vars.expand(script);
+                                let script_path = dir.join(&expanded_script);
+                                let output = std::process::Command::new("sh")
+                                    .arg("-e")
+                                    .arg(&script_path)
+                                    .current_dir(dir)
+                                    .stdout(std::process::Stdio::piped())
+                                    .stderr(std::process::Stdio::piped())
+                                    .output()
+                                    .map_err(|e| ParseError::Syntax {
+                                        file: String::new(),
+                                        line: parsed.line_number,
+                                        message: format!("failed to run script '{}': {e}", expanded_script),
+                                    })?;
+
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    return Err(ParseError::Syntax {
+                                        file: String::new(),
+                                        line: parsed.line_number,
+                                        message: format!("run script '{}' failed: {}", expanded_script, stderr.trim()),
+                                    });
+                                }
+
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                if !stdout.is_empty() {
+                                    let run_name = format!("run:{}", expanded_script);
+                                    let mut sub_reader = TupfileReader::parse(&stdout, &run_name)?;
+                                    sub_reader.vars = self.vars.clone();
+                                    sub_reader.bangs = self.bangs.clone();
+                                    sub_reader.gitignore_requested = self.gitignore_requested;
+                                    let sub_rules = sub_reader.evaluate_with_dirs(base_dir, tup_root, tf_dir)?;
+                                    self.vars = sub_reader.vars;
+                                    self.bangs = sub_reader.bangs;
+                                    self.gitignore_requested |= sub_reader.gitignore_requested;
+                                    rules.extend(sub_rules);
+                                }
+                            }
+                        }
                         TupfileLine::Error(msg) => {
                             let expanded = self.vars.expand(msg);
                             return Err(ParseError::Syntax {
