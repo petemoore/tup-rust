@@ -74,20 +74,66 @@ pub fn parse_lua_tupfile(
     tup_table.set("definerule", definerule).map_err(lua_err)?;
 
     // tup.rule (alias for definerule with positional args)
+    // Supports multiple calling conventions:
+    //   tup.rule('command')
+    //   tup.rule({'inputs'}, 'command')
+    //   tup.rule({'inputs'}, 'command', {'outputs'})
+    //   tup.rule('command', {'outputs'})
     let rules_clone2 = rules.clone();
-    let rule_fn = lua.create_function(move |_lua_ctx, table: LuaTable| {
-        let inputs: Vec<String> = table.get::<_, LuaTable>(1)
-            .map(|t| table_to_vec(&t))
-            .unwrap_or_default();
+    let rule_fn = lua.create_function(move |_lua_ctx, args: LuaMultiValue| {
+        let mut inputs = Vec::new();
+        let mut command = String::new();
+        let mut outputs = Vec::new();
 
-        let command: String = table.get::<_, String>(2)
-            .unwrap_or_default();
-
-        let outputs: Vec<String> = table.get::<_, LuaTable>(3)
-            .map(|t| table_to_vec(&t))
-            .unwrap_or_default();
+        let arg_list: Vec<LuaValue> = args.into_iter().collect();
+        match arg_list.len() {
+            1 => {
+                // tup.rule('command') or tup.rule({inputs, command, outputs})
+                match &arg_list[0] {
+                    LuaValue::String(s) => {
+                        command = s.to_str().unwrap_or("").to_string();
+                    }
+                    LuaValue::Table(t) => {
+                        inputs = t.get::<_, LuaTable>(1)
+                            .map(|t| table_to_vec(&t))
+                            .unwrap_or_default();
+                        command = t.get::<_, String>(2).unwrap_or_default();
+                        outputs = t.get::<_, LuaTable>(3)
+                            .map(|t| table_to_vec(&t))
+                            .unwrap_or_default();
+                    }
+                    _ => {}
+                }
+            }
+            2 => {
+                // tup.rule({'inputs'}, 'command') or tup.rule('command', {'outputs'})
+                match (&arg_list[0], &arg_list[1]) {
+                    (LuaValue::Table(t), LuaValue::String(s)) => {
+                        inputs = table_to_vec(t);
+                        command = s.to_str().unwrap_or("").to_string();
+                    }
+                    (LuaValue::String(s), LuaValue::Table(t)) => {
+                        command = s.to_str().unwrap_or("").to_string();
+                        outputs = table_to_vec(t);
+                    }
+                    _ => {}
+                }
+            }
+            3 => {
+                // tup.rule(inputs, 'command', outputs)
+                // inputs/outputs can be strings or tables
+                command = match &arg_list[1] {
+                    LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                    _ => String::new(),
+                };
+                inputs = lua_value_to_string_vec(&arg_list[0]);
+                outputs = lua_value_to_string_vec(&arg_list[2]);
+            }
+            _ => {}
+        }
 
         let had_inputs = !inputs.is_empty();
+        let output_copy = outputs.clone();
         let rule = Rule {
             foreach: false,
             inputs,
@@ -104,9 +150,70 @@ pub fn parse_lua_tupfile(
         };
 
         rules_clone2.lock().unwrap().push(rule);
-        Ok(())
+
+        // Return outputs as a table (for chaining)
+        let result = _lua_ctx.create_table()?;
+        for (i, out) in output_copy.iter().enumerate() {
+            result.set(i + 1, out.as_str())?;
+        }
+        Ok(result)
     }).map_err(lua_err)?;
     tup_table.set("rule", rule_fn).map_err(lua_err)?;
+
+    // tup.foreach_rule (like tup.rule but with foreach=true)
+    let rules_clone3 = rules.clone();
+    let foreach_rule_fn = lua.create_function(move |_lua_ctx, args: LuaMultiValue| {
+        let mut inputs = Vec::new();
+        let mut command = String::new();
+        let mut outputs = Vec::new();
+
+        let arg_list: Vec<LuaValue> = args.into_iter().collect();
+        match arg_list.len() {
+            2 => {
+                inputs = lua_value_to_string_vec(&arg_list[0]);
+                command = match &arg_list[1] {
+                    LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                    _ => String::new(),
+                };
+            }
+            3 => {
+                inputs = lua_value_to_string_vec(&arg_list[0]);
+                command = match &arg_list[1] {
+                    LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                    _ => String::new(),
+                };
+                outputs = lua_value_to_string_vec(&arg_list[2]);
+            }
+            _ => {}
+        }
+
+        let had_inputs = !inputs.is_empty();
+        let output_copy = outputs.clone();
+        let rule = Rule {
+            foreach: true,
+            inputs,
+            order_only_inputs: vec![],
+            command: RuleCommand {
+                display: None,
+                flags: None,
+                command,
+            },
+            outputs,
+            extra_outputs: vec![],
+            line_number: 0,
+            had_inputs,
+        };
+
+        rules_clone3.lock().unwrap().push(rule);
+
+        // Return outputs as a table (for chaining)
+        let result = _lua_ctx.create_table()?;
+        for (i, out) in output_copy.iter().enumerate() {
+            result.set(i + 1, out.as_str())?;
+        }
+        Ok(result)
+    }).map_err(lua_err)?;
+    tup_table.set("foreach_rule", foreach_rule_fn).map_err(lua_err)?;
 
     // tup.getcwd()
     let cwd = work_dir.to_string_lossy().to_string();
@@ -188,6 +295,18 @@ fn table_to_vec(table: &LuaTable) -> Vec<String> {
         result.push(val);
     }
     result
+}
+
+/// Convert a Lua value (string or table) to a Vec<String>.
+fn lua_value_to_string_vec(val: &LuaValue) -> Vec<String> {
+    match val {
+        LuaValue::String(s) => {
+            let s = s.to_str().unwrap_or("").to_string();
+            if s.is_empty() { vec![] } else { vec![s] }
+        }
+        LuaValue::Table(t) => table_to_vec(t),
+        _ => vec![],
+    }
 }
 
 fn lua_err(e: LuaError) -> String {
