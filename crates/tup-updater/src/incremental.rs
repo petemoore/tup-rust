@@ -34,10 +34,13 @@ impl BuildState {
             for line in content.lines() {
                 if let Some((key, hash_str)) = line.split_once('\t') {
                     if let Ok(hash) = hash_str.parse::<u64>() {
-                        state.entries.insert(key.to_string(), BuildEntry {
-                            hash,
-                            touched: false,
-                        });
+                        state.entries.insert(
+                            key.to_string(),
+                            BuildEntry {
+                                hash,
+                                touched: false,
+                            },
+                        );
                     }
                 }
             }
@@ -56,19 +59,14 @@ impl BuildState {
                 content.push('\n');
             }
         }
-        std::fs::write(path, &content)
-            .map_err(|e| format!("failed to save build state: {e}"))?;
+        std::fs::write(path, &content).map_err(|e| format!("failed to save build state: {e}"))?;
         Ok(())
     }
 
     /// Check if a rule needs to be rebuilt.
     ///
     /// Returns true if the rule should be executed (inputs changed or new).
-    pub fn needs_rebuild(
-        &mut self,
-        rule_key: &str,
-        input_hash: u64,
-    ) -> bool {
+    pub fn needs_rebuild(&mut self, rule_key: &str, input_hash: u64) -> bool {
         match self.entries.get(rule_key) {
             Some(entry) if entry.hash == input_hash => {
                 // Mark as touched (still valid)
@@ -86,10 +84,13 @@ impl BuildState {
 
     /// Mark a rule as successfully built with the given hash.
     pub fn mark_built(&mut self, rule_key: &str, input_hash: u64) {
-        self.entries.insert(rule_key.to_string(), BuildEntry {
-            hash: input_hash,
-            touched: true,
-        });
+        self.entries.insert(
+            rule_key.to_string(),
+            BuildEntry {
+                hash: input_hash,
+                touched: true,
+            },
+        );
     }
 
     /// Get the number of tracked entries.
@@ -110,11 +111,7 @@ impl Default for BuildState {
 }
 
 /// Compute a hash for a rule based on its command and input file mtimes.
-pub fn compute_rule_hash(
-    command: &str,
-    input_files: &[String],
-    work_dir: &Path,
-) -> u64 {
+pub fn compute_rule_hash(command: &str, input_files: &[String], work_dir: &Path) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 

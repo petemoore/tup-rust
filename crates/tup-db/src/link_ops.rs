@@ -10,12 +10,7 @@ use crate::schema::{NodeRow, TupDb};
 /// dependency queries, flag propagation, and input/output tracking.
 impl TupDb {
     /// Create a link with a specific cmdid (for group links).
-    pub fn link_insert_group(
-        &self,
-        from_id: TupId,
-        to_id: TupId,
-        cmdid: TupId,
-    ) -> DbResult<()> {
+    pub fn link_insert_group(&self, from_id: TupId, to_id: TupId, cmdid: TupId) -> DbResult<()> {
         self.conn().execute(
             "INSERT OR IGNORE INTO group_link VALUES(?1, ?2, ?3)",
             params![from_id.raw(), to_id.raw(), cmdid.raw()],
@@ -24,12 +19,7 @@ impl TupDb {
     }
 
     /// Remove a specific link.
-    pub fn link_remove(
-        &self,
-        from_id: TupId,
-        to_id: TupId,
-        link_type: LinkType,
-    ) -> DbResult<bool> {
+    pub fn link_remove(&self, from_id: TupId, to_id: TupId, link_type: LinkType) -> DbResult<bool> {
         let table = link_type.table_name();
         let count = self.conn().execute(
             &format!("DELETE FROM {table} WHERE from_id=?1 AND to_id=?2"),
@@ -81,9 +71,9 @@ impl TupDb {
     ///
     /// Corresponds to `tup_db_select_node_by_link()` in C.
     pub fn get_normal_outputs(&self, from_id: TupId) -> DbResult<Vec<TupId>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT to_id FROM normal_link WHERE from_id=?1",
-        )?;
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT to_id FROM normal_link WHERE from_id=?1")?;
         let rows = stmt.query_map(params![from_id.raw()], |row| {
             let id: i64 = row.get(0)?;
             Ok(TupId::new(id))
@@ -95,9 +85,9 @@ impl TupDb {
     ///
     /// i.e., "what points to this node?" (inputs/dependencies)
     pub fn get_normal_inputs(&self, to_id: TupId) -> DbResult<Vec<TupId>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT from_id FROM normal_link WHERE to_id=?1",
-        )?;
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT from_id FROM normal_link WHERE to_id=?1")?;
         let rows = stmt.query_map(params![to_id.raw()], |row| {
             let id: i64 = row.get(0)?;
             Ok(TupId::new(id))
@@ -109,9 +99,9 @@ impl TupDb {
     ///
     /// Corresponds to sticky_link queries in `tup_db_get_inputs()`.
     pub fn get_sticky_inputs(&self, to_id: TupId) -> DbResult<Vec<TupId>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT from_id FROM sticky_link WHERE to_id=?1",
-        )?;
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT from_id FROM sticky_link WHERE to_id=?1")?;
         let rows = stmt.query_map(params![to_id.raw()], |row| {
             let id: i64 = row.get(0)?;
             Ok(TupId::new(id))
@@ -121,9 +111,9 @@ impl TupDb {
 
     /// Get all nodes linked FROM the given node via sticky links.
     pub fn get_sticky_outputs(&self, from_id: TupId) -> DbResult<Vec<TupId>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT to_id FROM sticky_link WHERE from_id=?1",
-        )?;
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT to_id FROM sticky_link WHERE from_id=?1")?;
         let rows = stmt.query_map(params![from_id.raw()], |row| {
             let id: i64 = row.get(0)?;
             Ok(TupId::new(id))
@@ -135,9 +125,9 @@ impl TupDb {
     ///
     /// Returns (to_id, cmdid) pairs.
     pub fn get_group_links(&self, from_id: TupId) -> DbResult<Vec<(TupId, TupId)>> {
-        let mut stmt = self.conn().prepare(
-            "SELECT to_id, cmdid FROM group_link WHERE from_id=?1",
-        )?;
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT to_id, cmdid FROM group_link WHERE from_id=?1")?;
         let rows = stmt.query_map(params![from_id.raw()], |row| {
             let to_id: i64 = row.get(0)?;
             let cmdid: i64 = row.get(1)?;
@@ -310,11 +300,7 @@ impl TupDb {
     /// Get all nodes of a specific type in a directory.
     ///
     /// Corresponds to `tup_db_dirtype()` in C.
-    pub fn dir_nodes_by_type(
-        &self,
-        dir: TupId,
-        node_type: NodeType,
-    ) -> DbResult<Vec<NodeRow>> {
+    pub fn dir_nodes_by_type(&self, dir: TupId, node_type: NodeType) -> DbResult<Vec<NodeRow>> {
         let mut stmt = self.conn().prepare(
             "SELECT id, dir, type, mtime, mtime_ns, srcid, name, display, flags \
              FROM node WHERE dir=?1 AND type=?2",
@@ -329,11 +315,7 @@ impl TupDb {
     /// Get all nodes with a specific srcid.
     ///
     /// Corresponds to `tup_db_srcid_to_tree()` in C.
-    pub fn nodes_by_srcid(
-        &self,
-        srcid: TupId,
-        node_type: NodeType,
-    ) -> DbResult<Vec<NodeRow>> {
+    pub fn nodes_by_srcid(&self, srcid: TupId, node_type: NodeType) -> DbResult<Vec<NodeRow>> {
         let mut stmt = self.conn().prepare(
             "SELECT id, dir, type, mtime, mtime_ns, srcid, name, display, flags \
              FROM node WHERE srcid=?1 AND type=?2",
@@ -405,18 +387,20 @@ impl TupDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tup_types::{DOT_DT, TupFlags};
+    use tup_types::{TupFlags, DOT_DT};
 
     fn setup() -> TupDb {
         TupDb::create_in_memory().unwrap()
     }
 
     fn insert_file(db: &TupDb, dir: TupId, name: &str) -> TupId {
-        db.node_insert(dir, name, NodeType::File, 0, 0, -1, None, None).unwrap()
+        db.node_insert(dir, name, NodeType::File, 0, 0, -1, None, None)
+            .unwrap()
     }
 
     fn insert_cmd(db: &TupDb, dir: TupId, name: &str) -> TupId {
-        db.node_insert(dir, name, NodeType::Cmd, -1, 0, -1, None, None).unwrap()
+        db.node_insert(dir, name, NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap()
     }
 
     #[test]
@@ -520,7 +504,9 @@ mod tests {
         db.begin().unwrap();
 
         let output = insert_file(&db, DOT_DT, "out.o");
-        let group = db.node_insert(DOT_DT, "<objects>", NodeType::Group, -1, 0, -1, None, None).unwrap();
+        let group = db
+            .node_insert(DOT_DT, "<objects>", NodeType::Group, -1, 0, -1, None, None)
+            .unwrap();
         let cmd = insert_cmd(&db, DOT_DT, "gcc");
 
         db.link_insert_group(output, group, cmd).unwrap();
@@ -538,8 +524,12 @@ mod tests {
         db.begin().unwrap();
 
         let cmd = insert_cmd(&db, DOT_DT, "gcc -c main.c");
-        let out1 = db.node_insert(DOT_DT, "main.o", NodeType::Generated, 0, 0, -1, None, None).unwrap();
-        let out2 = db.node_insert(DOT_DT, "main.d", NodeType::Generated, 0, 0, -1, None, None).unwrap();
+        let out1 = db
+            .node_insert(DOT_DT, "main.o", NodeType::Generated, 0, 0, -1, None, None)
+            .unwrap();
+        let out2 = db
+            .node_insert(DOT_DT, "main.d", NodeType::Generated, 0, 0, -1, None, None)
+            .unwrap();
         db.link_insert(cmd, out1, LinkType::Normal).unwrap();
         db.link_insert(cmd, out2, LinkType::Normal).unwrap();
 
@@ -578,7 +568,9 @@ mod tests {
         db.begin().unwrap();
 
         let cmd = insert_cmd(&db, DOT_DT, "gcc");
-        let group = db.node_insert(DOT_DT, "<objs>", NodeType::Group, -1, 0, -1, None, None).unwrap();
+        let group = db
+            .node_insert(DOT_DT, "<objs>", NodeType::Group, -1, 0, -1, None, None)
+            .unwrap();
         db.link_insert(cmd, group, LinkType::Normal).unwrap();
 
         let result = db.get_output_group(cmd).unwrap();
@@ -597,7 +589,9 @@ mod tests {
         db.begin().unwrap();
 
         let cmd = insert_cmd(&db, DOT_DT, "gcc main.c");
-        let output = db.node_insert(DOT_DT, "main.o", NodeType::Generated, 0, 0, -1, None, None).unwrap();
+        let output = db
+            .node_insert(DOT_DT, "main.o", NodeType::Generated, 0, 0, -1, None, None)
+            .unwrap();
         db.link_insert(cmd, output, LinkType::Normal).unwrap();
 
         let count = db.modify_cmds_by_output(output).unwrap();
@@ -631,7 +625,9 @@ mod tests {
 
         // Create a file that's included by a directory (via normal_link)
         let file = insert_file(&db, DOT_DT, "rules.tup");
-        let subdir = db.node_insert(DOT_DT, "subdir", NodeType::Dir, 0, 0, -1, None, None).unwrap();
+        let subdir = db
+            .node_insert(DOT_DT, "subdir", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
         db.link_insert(file, subdir, LinkType::Normal).unwrap();
 
         db.set_dependent_dir_flags(file).unwrap();
@@ -679,8 +675,12 @@ mod tests {
         let db = setup();
         db.begin().unwrap();
 
-        let dir1 = db.node_insert(DOT_DT, "dir1", NodeType::Dir, 0, 0, -1, None, None).unwrap();
-        let dir2 = db.node_insert(DOT_DT, "dir2", NodeType::Dir, 0, 0, -1, None, None).unwrap();
+        let dir1 = db
+            .node_insert(DOT_DT, "dir1", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
+        let dir2 = db
+            .node_insert(DOT_DT, "dir2", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
 
         db.reparse_all().unwrap();
         assert!(db.flag_check(dir1, TupFlags::Create).unwrap());
@@ -696,13 +696,16 @@ mod tests {
         let db = setup();
         db.begin().unwrap();
 
-        let dir = db.node_insert(DOT_DT, "build", NodeType::Dir, 0, 0, -1, None, None).unwrap();
+        let dir = db
+            .node_insert(DOT_DT, "build", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
 
         // Empty dir is not generated
         assert!(!db.is_generated_dir(dir).unwrap());
 
         // Dir with a generated file is generated
-        db.node_insert(dir, "output.o", NodeType::Generated, 0, 0, -1, None, None).unwrap();
+        db.node_insert(dir, "output.o", NodeType::Generated, 0, 0, -1, None, None)
+            .unwrap();
         assert!(db.is_generated_dir(dir).unwrap());
 
         // Dir with a regular file is NOT generated

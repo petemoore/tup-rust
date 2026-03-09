@@ -24,53 +24,58 @@ pub fn parse_lua_tupfile(
 
     // tup.definerule
     let rules_clone = rules.clone();
-    let definerule = lua.create_function(move |lua_ctx, table: LuaTable| {
-        let inputs: Vec<String> = table.get::<_, LuaTable>("inputs")
-            .map(|t| table_to_vec(&t))
-            .unwrap_or_default();
+    let definerule = lua
+        .create_function(move |lua_ctx, table: LuaTable| {
+            let inputs: Vec<String> = table
+                .get::<_, LuaTable>("inputs")
+                .map(|t| table_to_vec(&t))
+                .unwrap_or_default();
 
-        let command: String = table.get::<_, String>("command")
-            .unwrap_or_default();
+            let command: String = table.get::<_, String>("command").unwrap_or_default();
 
-        let outputs: Vec<String> = table.get::<_, LuaTable>("outputs")
-            .map(|t| table_to_vec(&t))
-            .unwrap_or_default();
+            let outputs: Vec<String> = table
+                .get::<_, LuaTable>("outputs")
+                .map(|t| table_to_vec(&t))
+                .unwrap_or_default();
 
-        let extra_inputs: Vec<String> = table.get::<_, LuaTable>("extra_inputs")
-            .map(|t| table_to_vec(&t))
-            .unwrap_or_default();
+            let extra_inputs: Vec<String> = table
+                .get::<_, LuaTable>("extra_inputs")
+                .map(|t| table_to_vec(&t))
+                .unwrap_or_default();
 
-        let extra_outputs: Vec<String> = table.get::<_, LuaTable>("extra_outputs")
-            .map(|t| table_to_vec(&t))
-            .unwrap_or_default();
+            let extra_outputs: Vec<String> = table
+                .get::<_, LuaTable>("extra_outputs")
+                .map(|t| table_to_vec(&t))
+                .unwrap_or_default();
 
-        let foreach: bool = table.get::<_, bool>("foreach").unwrap_or(false);
+            let foreach: bool = table.get::<_, bool>("foreach").unwrap_or(false);
 
-        let had_inputs = !inputs.is_empty();
-        let rule = Rule {
-            foreach,
-            inputs,
-            order_only_inputs: extra_inputs,
-            command: RuleCommand {
-                display: None,
-                flags: None,
-                command,
-            },
-            outputs: outputs.clone(),
-            extra_outputs,
-            line_number: 0,
-            had_inputs,
-        };
+            let had_inputs = !inputs.is_empty();
+            let rule = Rule {
+                foreach,
+                inputs,
+                order_only_inputs: extra_inputs,
+                command: RuleCommand {
+                    display: None,
+                    flags: None,
+                    command,
+                },
+                outputs: outputs.clone(),
+                extra_outputs,
+                line_number: 0,
+                had_inputs,
+            };
 
-        rules_clone.lock().unwrap().push(rule);
+            rules_clone.lock().unwrap().push(rule);
 
-        // Return output table (for chaining)
-        let result = lua_ctx.create_table()?;
-        for (i, out) in outputs.iter().enumerate() {
-            result.set(i + 1, out.as_str())?;
-        }
-        Ok(result)
-    }).map_err(lua_err)?;
+            // Return output table (for chaining)
+            let result = lua_ctx.create_table()?;
+            for (i, out) in outputs.iter().enumerate() {
+                result.set(i + 1, out.as_str())?;
+            }
+            Ok(result)
+        })
+        .map_err(lua_err)?;
     tup_table.set("definerule", definerule).map_err(lua_err)?;
 
     // tup.rule (alias for definerule with positional args)
@@ -80,192 +85,203 @@ pub fn parse_lua_tupfile(
     //   tup.rule({'inputs'}, 'command', {'outputs'})
     //   tup.rule('command', {'outputs'})
     let rules_clone2 = rules.clone();
-    let rule_fn = lua.create_function(move |_lua_ctx, args: LuaMultiValue| {
-        let mut inputs = Vec::new();
-        let mut command = String::new();
-        let mut outputs = Vec::new();
+    let rule_fn = lua
+        .create_function(move |_lua_ctx, args: LuaMultiValue| {
+            let mut inputs = Vec::new();
+            let mut command = String::new();
+            let mut outputs = Vec::new();
 
-        let arg_list: Vec<LuaValue> = args.into_iter().collect();
-        match arg_list.len() {
-            1 => {
-                // tup.rule('command') or tup.rule({inputs, command, outputs})
-                match &arg_list[0] {
-                    LuaValue::String(s) => {
-                        command = s.to_str().unwrap_or("").to_string();
+            let arg_list: Vec<LuaValue> = args.into_iter().collect();
+            match arg_list.len() {
+                1 => {
+                    // tup.rule('command') or tup.rule({inputs, command, outputs})
+                    match &arg_list[0] {
+                        LuaValue::String(s) => {
+                            command = s.to_str().unwrap_or("").to_string();
+                        }
+                        LuaValue::Table(t) => {
+                            inputs = t
+                                .get::<_, LuaTable>(1)
+                                .map(|t| table_to_vec(&t))
+                                .unwrap_or_default();
+                            command = t.get::<_, String>(2).unwrap_or_default();
+                            outputs = t
+                                .get::<_, LuaTable>(3)
+                                .map(|t| table_to_vec(&t))
+                                .unwrap_or_default();
+                        }
+                        _ => {}
                     }
-                    LuaValue::Table(t) => {
-                        inputs = t.get::<_, LuaTable>(1)
-                            .map(|t| table_to_vec(&t))
-                            .unwrap_or_default();
-                        command = t.get::<_, String>(2).unwrap_or_default();
-                        outputs = t.get::<_, LuaTable>(3)
-                            .map(|t| table_to_vec(&t))
-                            .unwrap_or_default();
-                    }
-                    _ => {}
                 }
-            }
-            2 => {
-                // tup.rule({'inputs'}, 'command') or tup.rule('command', {'outputs'})
-                match (&arg_list[0], &arg_list[1]) {
-                    (LuaValue::Table(t), LuaValue::String(s)) => {
-                        inputs = table_to_vec(t);
-                        command = s.to_str().unwrap_or("").to_string();
+                2 => {
+                    // tup.rule({'inputs'}, 'command') or tup.rule('command', {'outputs'})
+                    match (&arg_list[0], &arg_list[1]) {
+                        (LuaValue::Table(t), LuaValue::String(s)) => {
+                            inputs = table_to_vec(t);
+                            command = s.to_str().unwrap_or("").to_string();
+                        }
+                        (LuaValue::String(s), LuaValue::Table(t)) => {
+                            command = s.to_str().unwrap_or("").to_string();
+                            outputs = table_to_vec(t);
+                        }
+                        _ => {}
                     }
-                    (LuaValue::String(s), LuaValue::Table(t)) => {
-                        command = s.to_str().unwrap_or("").to_string();
-                        outputs = table_to_vec(t);
-                    }
-                    _ => {}
                 }
+                3 => {
+                    // tup.rule(inputs, 'command', outputs)
+                    // inputs/outputs can be strings or tables
+                    command = match &arg_list[1] {
+                        LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                        _ => String::new(),
+                    };
+                    inputs = lua_value_to_string_vec(&arg_list[0]);
+                    outputs = lua_value_to_string_vec(&arg_list[2]);
+                }
+                _ => {}
             }
-            3 => {
-                // tup.rule(inputs, 'command', outputs)
-                // inputs/outputs can be strings or tables
-                command = match &arg_list[1] {
-                    LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
-                    _ => String::new(),
-                };
-                inputs = lua_value_to_string_vec(&arg_list[0]);
-                outputs = lua_value_to_string_vec(&arg_list[2]);
+
+            let had_inputs = !inputs.is_empty();
+            let output_copy = outputs.clone();
+            let rule = Rule {
+                foreach: false,
+                inputs,
+                order_only_inputs: vec![],
+                command: RuleCommand {
+                    display: None,
+                    flags: None,
+                    command,
+                },
+                outputs,
+                extra_outputs: vec![],
+                line_number: 0,
+                had_inputs,
+            };
+
+            rules_clone2.lock().unwrap().push(rule);
+
+            // Return outputs as a table (for chaining)
+            let result = _lua_ctx.create_table()?;
+            for (i, out) in output_copy.iter().enumerate() {
+                result.set(i + 1, out.as_str())?;
             }
-            _ => {}
-        }
-
-        let had_inputs = !inputs.is_empty();
-        let output_copy = outputs.clone();
-        let rule = Rule {
-            foreach: false,
-            inputs,
-            order_only_inputs: vec![],
-            command: RuleCommand {
-                display: None,
-                flags: None,
-                command,
-            },
-            outputs,
-            extra_outputs: vec![],
-            line_number: 0,
-            had_inputs,
-        };
-
-        rules_clone2.lock().unwrap().push(rule);
-
-        // Return outputs as a table (for chaining)
-        let result = _lua_ctx.create_table()?;
-        for (i, out) in output_copy.iter().enumerate() {
-            result.set(i + 1, out.as_str())?;
-        }
-        Ok(result)
-    }).map_err(lua_err)?;
+            Ok(result)
+        })
+        .map_err(lua_err)?;
     tup_table.set("rule", rule_fn).map_err(lua_err)?;
 
     // tup.foreach_rule (like tup.rule but with foreach=true)
     let rules_clone3 = rules.clone();
-    let foreach_rule_fn = lua.create_function(move |_lua_ctx, args: LuaMultiValue| {
-        let mut inputs = Vec::new();
-        let mut command = String::new();
-        let mut outputs = Vec::new();
+    let foreach_rule_fn = lua
+        .create_function(move |_lua_ctx, args: LuaMultiValue| {
+            let mut inputs = Vec::new();
+            let mut command = String::new();
+            let mut outputs = Vec::new();
 
-        let arg_list: Vec<LuaValue> = args.into_iter().collect();
-        match arg_list.len() {
-            2 => {
-                inputs = lua_value_to_string_vec(&arg_list[0]);
-                command = match &arg_list[1] {
-                    LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
-                    _ => String::new(),
-                };
+            let arg_list: Vec<LuaValue> = args.into_iter().collect();
+            match arg_list.len() {
+                2 => {
+                    inputs = lua_value_to_string_vec(&arg_list[0]);
+                    command = match &arg_list[1] {
+                        LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                        _ => String::new(),
+                    };
+                }
+                3 => {
+                    inputs = lua_value_to_string_vec(&arg_list[0]);
+                    command = match &arg_list[1] {
+                        LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                        _ => String::new(),
+                    };
+                    outputs = lua_value_to_string_vec(&arg_list[2]);
+                }
+                _ => {}
             }
-            3 => {
-                inputs = lua_value_to_string_vec(&arg_list[0]);
-                command = match &arg_list[1] {
-                    LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
-                    _ => String::new(),
-                };
-                outputs = lua_value_to_string_vec(&arg_list[2]);
+
+            let had_inputs = !inputs.is_empty();
+            let output_copy = outputs.clone();
+            let rule = Rule {
+                foreach: true,
+                inputs,
+                order_only_inputs: vec![],
+                command: RuleCommand {
+                    display: None,
+                    flags: None,
+                    command,
+                },
+                outputs,
+                extra_outputs: vec![],
+                line_number: 0,
+                had_inputs,
+            };
+
+            rules_clone3.lock().unwrap().push(rule);
+
+            // Return outputs as a table (for chaining)
+            let result = _lua_ctx.create_table()?;
+            for (i, out) in output_copy.iter().enumerate() {
+                result.set(i + 1, out.as_str())?;
             }
-            _ => {}
-        }
-
-        let had_inputs = !inputs.is_empty();
-        let output_copy = outputs.clone();
-        let rule = Rule {
-            foreach: true,
-            inputs,
-            order_only_inputs: vec![],
-            command: RuleCommand {
-                display: None,
-                flags: None,
-                command,
-            },
-            outputs,
-            extra_outputs: vec![],
-            line_number: 0,
-            had_inputs,
-        };
-
-        rules_clone3.lock().unwrap().push(rule);
-
-        // Return outputs as a table (for chaining)
-        let result = _lua_ctx.create_table()?;
-        for (i, out) in output_copy.iter().enumerate() {
-            result.set(i + 1, out.as_str())?;
-        }
-        Ok(result)
-    }).map_err(lua_err)?;
-    tup_table.set("foreach_rule", foreach_rule_fn).map_err(lua_err)?;
+            Ok(result)
+        })
+        .map_err(lua_err)?;
+    tup_table
+        .set("foreach_rule", foreach_rule_fn)
+        .map_err(lua_err)?;
 
     // tup.getcwd()
     let cwd = work_dir.to_string_lossy().to_string();
-    let getcwd = lua.create_function(move |_, ()| {
-        Ok(cwd.clone())
-    }).map_err(lua_err)?;
+    let getcwd = lua
+        .create_function(move |_, ()| Ok(cwd.clone()))
+        .map_err(lua_err)?;
     tup_table.set("getcwd", getcwd).map_err(lua_err)?;
 
     // tup.getconfig(name)
-    let getconfig = lua.create_function(|_, _name: String| {
-        // Config integration would go here
-        Ok(LuaValue::Nil)
-    }).map_err(lua_err)?;
+    let getconfig = lua
+        .create_function(|_, _name: String| {
+            // Config integration would go here
+            Ok(LuaValue::Nil)
+        })
+        .map_err(lua_err)?;
     tup_table.set("getconfig", getconfig).map_err(lua_err)?;
 
     // tup.glob(pattern)
     let wd = work_dir_owned.clone();
-    let glob_fn = lua.create_function(move |lua_ctx, pattern: String| {
-        let matches = crate::glob::expand_globs(
-            &[pattern],
-            &wd,
-        ).unwrap_or_default();
+    let glob_fn = lua
+        .create_function(move |lua_ctx, pattern: String| {
+            let matches = crate::glob::expand_globs(&[pattern], &wd).unwrap_or_default();
 
-        let result = lua_ctx.create_table()?;
-        for (i, m) in matches.iter().enumerate() {
-            result.set(i + 1, m.as_str())?;
-        }
-        Ok(result)
-    }).map_err(lua_err)?;
+            let result = lua_ctx.create_table()?;
+            for (i, m) in matches.iter().enumerate() {
+                result.set(i + 1, m.as_str())?;
+            }
+            Ok(result)
+        })
+        .map_err(lua_err)?;
     tup_table.set("glob", glob_fn).map_err(lua_err)?;
 
     // tup.export(varname)
-    let export_fn = lua.create_function(|_, _name: String| {
-        Ok(())
-    }).map_err(lua_err)?;
+    let export_fn = lua
+        .create_function(|_, _name: String| Ok(()))
+        .map_err(lua_err)?;
     tup_table.set("export", export_fn).map_err(lua_err)?;
 
     // tup.creategitignore()
-    let gitignore_fn = lua.create_function(|_, ()| {
-        Ok(())
-    }).map_err(lua_err)?;
-    tup_table.set("creategitignore", gitignore_fn).map_err(lua_err)?;
+    let gitignore_fn = lua.create_function(|_, ()| Ok(())).map_err(lua_err)?;
+    tup_table
+        .set("creategitignore", gitignore_fn)
+        .map_err(lua_err)?;
 
     // tup.append_table(t1, t2)
-    let append_fn = lua.create_function(|_, (t1, t2): (LuaTable, LuaTable)| {
-        let len: i64 = t1.len()?;
-        for pair in t2.pairs::<i64, LuaValue>() {
-            let (_, val) = pair?;
-            t1.set(len + 1, val)?;
-        }
-        Ok(())
-    }).map_err(lua_err)?;
+    let append_fn = lua
+        .create_function(|_, (t1, t2): (LuaTable, LuaTable)| {
+            let len: i64 = t1.len()?;
+            for pair in t2.pairs::<i64, LuaValue>() {
+                let (_, val) = pair?;
+                t1.set(len + 1, val)?;
+            }
+            Ok(())
+        })
+        .map_err(lua_err)?;
     tup_table.set("append_table", append_fn).map_err(lua_err)?;
 
     // Set tup as global
@@ -281,7 +297,12 @@ pub fn parse_lua_tupfile(
     drop(lua);
 
     let result = std::sync::Arc::try_unwrap(rules)
-        .map_err(|arc| format!("internal error: {} references to rules remain", std::sync::Arc::strong_count(&arc)))?
+        .map_err(|arc| {
+            format!(
+                "internal error: {} references to rules remain",
+                std::sync::Arc::strong_count(&arc)
+            )
+        })?
         .into_inner()
         .unwrap();
 
@@ -302,7 +323,11 @@ fn lua_value_to_string_vec(val: &LuaValue) -> Vec<String> {
     match val {
         LuaValue::String(s) => {
             let s = s.to_str().unwrap_or("").to_string();
-            if s.is_empty() { vec![] } else { vec![s] }
+            if s.is_empty() {
+                vec![]
+            } else {
+                vec![s]
+            }
         }
         LuaValue::Table(t) => table_to_vec(t),
         _ => vec![],
@@ -403,7 +428,10 @@ tup.definerule{
 "#;
         let tmp = tempfile::tempdir().unwrap();
         let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path()).unwrap();
-        assert_eq!(rules[0].command.command, "gcc -Wall -O2 -c main.c -o main.o");
+        assert_eq!(
+            rules[0].command.command,
+            "gcc -Wall -O2 -c main.c -o main.o"
+        );
     }
 
     #[test]

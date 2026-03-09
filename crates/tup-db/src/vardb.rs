@@ -285,7 +285,10 @@ mod tests {
 
         assert_eq!(only_a, vec!["X"]);
         assert_eq!(only_b, vec!["W"]);
-        assert_eq!(both, vec![("Y".to_string(), true), ("Z".to_string(), false)]);
+        assert_eq!(
+            both,
+            vec![("Y".to_string(), true), ("Z".to_string(), false)]
+        );
     }
 
     #[test]

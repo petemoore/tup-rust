@@ -11,6 +11,6 @@ mod progress;
 
 pub use ccache::CcacheConfig;
 pub use executor::{CommandResult, Updater};
-pub use incremental::{BuildState, compute_rule_hash, rule_key};
+pub use incremental::{compute_rule_hash, rule_key, BuildState};
 pub use outputs::{snapshot_files, verify_outputs, OutputVerification};
 pub use progress::Progress;

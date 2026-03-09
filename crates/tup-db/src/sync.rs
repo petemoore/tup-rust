@@ -32,11 +32,7 @@ pub struct SyncResult {
 /// - Directories with changed Tupfiles have CREATE flag set
 ///
 /// Corresponds to `tup_scan()` in C's path.c.
-pub fn sync_filesystem(
-    db: &TupDb,
-    cache: &mut EntryCache,
-    root: &Path,
-) -> DbResult<SyncResult> {
+pub fn sync_filesystem(db: &TupDb, cache: &mut EntryCache, root: &Path) -> DbResult<SyncResult> {
     let mut result = SyncResult::default();
 
     db.begin()?;
@@ -85,7 +81,10 @@ fn sync_dir(
         if entry.is_dir {
             // Handle directory
             let sub_id = match db_map.get(&entry.name) {
-                Some(row) if row.node_type == NodeType::Dir || row.node_type == NodeType::GeneratedDir => {
+                Some(row)
+                    if row.node_type == NodeType::Dir
+                        || row.node_type == NodeType::GeneratedDir =>
+                {
                     row.id
                 }
                 Some(row) if row.node_type == NodeType::Ghost => {
@@ -97,10 +96,8 @@ fn sync_dir(
                 Some(_) => continue, // Type conflict, skip
                 None => {
                     // New directory
-                    let id = db.node_insert(
-                        dir_id, &entry.name, NodeType::Dir,
-                        -1, 0, -1, None, None,
-                    )?;
+                    let id =
+                        db.node_insert(dir_id, &entry.name, NodeType::Dir, -1, 0, -1, None, None)?;
                     let row = db.node_select_by_id(id)?.unwrap();
                     cache.add(TupEntry::from_node_row(&row));
                     result.dirs_added += 1;
@@ -122,7 +119,6 @@ fn sync_dir(
             // Recurse into subdirectory
             let sub_path = dir_path.join(&entry.name);
             sync_dir(db, cache, project_root, &sub_path, sub_id, result)?;
-
         } else {
             // Handle file
             match db_map.get(&entry.name) {
@@ -165,8 +161,14 @@ fn sync_dir(
                 None => {
                     // New file
                     db.node_insert(
-                        dir_id, &entry.name, NodeType::File,
-                        entry.mtime, entry.mtime_ns, -1, None, None,
+                        dir_id,
+                        &entry.name,
+                        NodeType::File,
+                        entry.mtime,
+                        entry.mtime_ns,
+                        -1,
+                        None,
+                        None,
                     )?;
                     result.files_added += 1;
 
@@ -252,7 +254,8 @@ fn read_dir_entries(dir: &Path) -> Vec<DirEntry> {
                 mtime_ns: 0,
             });
         } else if file_type.is_file() {
-            let (mtime, mtime_ns) = entry.metadata()
+            let (mtime, mtime_ns) = entry
+                .metadata()
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
@@ -307,7 +310,16 @@ fn check_tupfile_changed(db: &TupDb, dir_id: TupId, dir_path: &Path) -> DbResult
             }
             None => {
                 // New Tupfile — create node
-                db.node_insert(dir_id, name, NodeType::File, mtime, mtime_ns, -1, None, None)?;
+                db.node_insert(
+                    dir_id,
+                    name,
+                    NodeType::File,
+                    mtime,
+                    mtime_ns,
+                    -1,
+                    None,
+                    None,
+                )?;
                 return Ok(true);
             }
         }

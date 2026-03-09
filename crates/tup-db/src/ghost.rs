@@ -125,7 +125,13 @@ impl TupDb {
     /// Delete a ghost node — remove from all flag lists, links, and node table.
     fn delete_ghost_node(&self, id: TupId) -> DbResult<()> {
         // Remove from all flag lists
-        for table in &["config_list", "create_list", "modify_list", "variant_list", "transient_list"] {
+        for table in &[
+            "config_list",
+            "create_list",
+            "modify_list",
+            "variant_list",
+            "transient_list",
+        ] {
             self.conn().execute(
                 &format!("DELETE FROM {table} WHERE id=?1"),
                 params![id.raw()],
@@ -177,9 +183,9 @@ mod tests {
         let db = TupDb::create_in_memory().unwrap();
         db.begin().unwrap();
 
-        let ghost_id = db.node_insert(
-            DOT_DT, "phantom", NodeType::Ghost, -1, 0, -1, None, None,
-        ).unwrap();
+        let ghost_id = db
+            .node_insert(DOT_DT, "phantom", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
 
         assert!(db.is_ghost_reclaimable(ghost_id, NodeType::Ghost).unwrap());
         db.commit().unwrap();
@@ -190,13 +196,12 @@ mod tests {
         let db = TupDb::create_in_memory().unwrap();
         db.begin().unwrap();
 
-        let ghost_dir = db.node_insert(
-            DOT_DT, "ghost_dir", NodeType::Ghost, -1, 0, -1, None, None,
-        ).unwrap();
+        let ghost_dir = db
+            .node_insert(DOT_DT, "ghost_dir", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
         // Child node has ghost_dir as parent
-        db.node_insert(
-            ghost_dir, "child.txt", NodeType::File, 0, 0, -1, None, None,
-        ).unwrap();
+        db.node_insert(ghost_dir, "child.txt", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
 
         assert!(!db.is_ghost_reclaimable(ghost_dir, NodeType::Ghost).unwrap());
         db.commit().unwrap();
@@ -207,13 +212,14 @@ mod tests {
         let db = TupDb::create_in_memory().unwrap();
         db.begin().unwrap();
 
-        let ghost = db.node_insert(
-            DOT_DT, "ghost_file", NodeType::Ghost, -1, 0, -1, None, None,
-        ).unwrap();
-        let cmd = db.node_insert(
-            DOT_DT, "some_cmd", NodeType::Cmd, -1, 0, -1, None, None,
-        ).unwrap();
-        db.link_insert(ghost, cmd, tup_types::LinkType::Normal).unwrap();
+        let ghost = db
+            .node_insert(DOT_DT, "ghost_file", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
+        let cmd = db
+            .node_insert(DOT_DT, "some_cmd", NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap();
+        db.link_insert(ghost, cmd, tup_types::LinkType::Normal)
+            .unwrap();
 
         assert!(!db.is_ghost_reclaimable(ghost, NodeType::Ghost).unwrap());
         db.commit().unwrap();
@@ -224,12 +230,12 @@ mod tests {
         let db = TupDb::create_in_memory().unwrap();
         db.begin().unwrap();
 
-        let g1 = db.node_insert(
-            DOT_DT, "ghost1", NodeType::Ghost, -1, 0, -1, None, None,
-        ).unwrap();
-        let g2 = db.node_insert(
-            DOT_DT, "ghost2", NodeType::Ghost, -1, 0, -1, None, None,
-        ).unwrap();
+        let g1 = db
+            .node_insert(DOT_DT, "ghost1", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
+        let g2 = db
+            .node_insert(DOT_DT, "ghost2", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
 
         let mut candidates = vec![g1, g2];
         let reclaimed = db.reclaim_ghosts(&mut candidates).unwrap();
@@ -247,12 +253,30 @@ mod tests {
         db.begin().unwrap();
 
         // Ghost parent dir with ghost child
-        let parent = db.node_insert(
-            DOT_DT, "ghost_parent", NodeType::Ghost, -1, 0, -1, None, None,
-        ).unwrap();
-        let child = db.node_insert(
-            parent, "ghost_child", NodeType::Ghost, -1, 0, -1, None, None,
-        ).unwrap();
+        let parent = db
+            .node_insert(
+                DOT_DT,
+                "ghost_parent",
+                NodeType::Ghost,
+                -1,
+                0,
+                -1,
+                None,
+                None,
+            )
+            .unwrap();
+        let child = db
+            .node_insert(
+                parent,
+                "ghost_child",
+                NodeType::Ghost,
+                -1,
+                0,
+                -1,
+                None,
+                None,
+            )
+            .unwrap();
 
         // Start with child — parent should cascade
         let mut candidates = vec![child];
@@ -269,9 +293,9 @@ mod tests {
         let db = TupDb::create_in_memory().unwrap();
         db.begin().unwrap();
 
-        let config = db.node_insert(
-            DOT_DT, "tup.config", NodeType::Ghost, -1, 0, -1, None, None,
-        ).unwrap();
+        let config = db
+            .node_insert(DOT_DT, "tup.config", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
 
         let mut candidates = vec![config];
         let reclaimed = db.reclaim_ghosts(&mut candidates).unwrap();
@@ -286,9 +310,9 @@ mod tests {
         let db = TupDb::create_in_memory().unwrap();
         db.begin().unwrap();
 
-        let id = db.node_insert(
-            DOT_DT, "temp", NodeType::File, 0, 0, -1, None, None,
-        ).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "temp", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
 
         let deleted = db.delete_or_ghost(id).unwrap();
         assert!(deleted); // Fully deleted
@@ -301,12 +325,11 @@ mod tests {
         let db = TupDb::create_in_memory().unwrap();
         db.begin().unwrap();
 
-        let dir = db.node_insert(
-            DOT_DT, "mydir", NodeType::Dir, 0, 0, -1, None, None,
-        ).unwrap();
-        db.node_insert(
-            dir, "child", NodeType::File, 0, 0, -1, None, None,
-        ).unwrap();
+        let dir = db
+            .node_insert(DOT_DT, "mydir", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
+        db.node_insert(dir, "child", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
 
         let deleted = db.delete_or_ghost(dir).unwrap();
         assert!(!deleted); // Converted to ghost

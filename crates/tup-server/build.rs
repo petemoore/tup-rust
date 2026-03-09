@@ -34,12 +34,18 @@ fn build_ldpreload() {
     match status {
         Ok(s) if s.success() => {
             // Tell cargo where to find the library
-            println!("cargo:rustc-env=TUP_LDPRELOAD_PATH={}", out_dir.join("libtup_ldpreload.so").display());
+            println!(
+                "cargo:rustc-env=TUP_LDPRELOAD_PATH={}",
+                out_dir.join("libtup_ldpreload.so").display()
+            );
             println!("cargo:rerun-if-changed=csrc/ldpreload.c");
             println!("cargo:rerun-if-changed=csrc/tup_depfile.h");
         }
         Ok(s) => {
-            eprintln!("Warning: failed to compile ldpreload.c (exit code {:?})", s.code());
+            eprintln!(
+                "Warning: failed to compile ldpreload.c (exit code {:?})",
+                s.code()
+            );
             eprintln!("LD_PRELOAD dependency tracking will not be available.");
         }
         Err(e) => {

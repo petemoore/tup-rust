@@ -6,7 +6,11 @@ pub enum TupError {
     /// Database operation failed.
     Database(String),
     /// Tupfile parsing error.
-    Parse { file: String, line: usize, message: String },
+    Parse {
+        file: String,
+        line: usize,
+        message: String,
+    },
     /// Circular dependency detected in the build graph.
     CircularDependency(String),
     /// File system operation failed.
@@ -27,7 +31,11 @@ impl fmt::Display for TupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Database(msg) => write!(f, "database error: {msg}"),
-            Self::Parse { file, line, message } => {
+            Self::Parse {
+                file,
+                line,
+                message,
+            } => {
                 write!(f, "{file}:{line}: {message}")
             }
             Self::CircularDependency(msg) => {

@@ -48,11 +48,7 @@ pub fn scan_directory(root: &Path) -> Result<ScanResult, String> {
     Ok(result)
 }
 
-fn scan_recursive(
-    root: &Path,
-    dir: &Path,
-    result: &mut ScanResult,
-) -> Result<(), String> {
+fn scan_recursive(root: &Path, dir: &Path, result: &mut ScanResult) -> Result<(), String> {
     let entries = std::fs::read_dir(dir)
         .map_err(|e| format!("failed to read directory {}: {e}", dir.display()))?;
 
@@ -76,19 +72,22 @@ fn scan_recursive(
         }
 
         let path = entry.path();
-        let rel_path = path.strip_prefix(root)
+        let rel_path = path
+            .strip_prefix(root)
             .map_err(|_| "failed to compute relative path".to_string())?
             .to_string_lossy()
             .to_string();
 
-        let file_type = entry.file_type()
+        let file_type = entry
+            .file_type()
             .map_err(|e| format!("failed to get file type for {}: {e}", path.display()))?;
 
         if file_type.is_dir() {
             result.directories.push(rel_path.clone());
             scan_recursive(root, &path, result)?;
         } else if file_type.is_file() {
-            let metadata = entry.metadata()
+            let metadata = entry
+                .metadata()
                 .map_err(|e| format!("failed to get metadata for {}: {e}", path.display()))?;
 
             let (mtime, mtime_ns) = get_mtime(&metadata);
@@ -108,12 +107,10 @@ fn scan_recursive(
 /// Extract mtime from file metadata.
 fn get_mtime(metadata: &std::fs::Metadata) -> (i64, i64) {
     match metadata.modified() {
-        Ok(time) => {
-            match time.duration_since(SystemTime::UNIX_EPOCH) {
-                Ok(duration) => (duration.as_secs() as i64, duration.subsec_nanos() as i64),
-                Err(_) => (-1, 0),
-            }
-        }
+        Ok(time) => match time.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(duration) => (duration.as_secs() as i64, duration.subsec_nanos() as i64),
+            Err(_) => (-1, 0),
+        },
         Err(_) => (-1, 0),
     }
 }
@@ -130,9 +127,7 @@ pub fn diff_scan(
     let mut new_files = Vec::new();
     let mut modified_files = Vec::new();
 
-    let scanned_paths: BTreeSet<String> = scanned.iter()
-        .map(|f| f.path.clone())
-        .collect();
+    let scanned_paths: BTreeSet<String> = scanned.iter().map(|f| f.path.clone()).collect();
 
     for file in scanned {
         if !known_files.contains(&file.path) {
@@ -144,7 +139,8 @@ pub fn diff_scan(
         }
     }
 
-    let deleted_files: Vec<String> = known_files.iter()
+    let deleted_files: Vec<String> = known_files
+        .iter()
         .filter(|f| !scanned_paths.contains(f.as_str()))
         .cloned()
         .collect();
@@ -177,13 +173,15 @@ fn find_tupfiles_recursive(
         }
 
         let path = entry.path();
-        let file_type = entry.file_type()
+        let file_type = entry
+            .file_type()
             .map_err(|e| format!("failed to get file type: {e}"))?;
 
         if file_type.is_dir() {
             find_tupfiles_recursive(root, &path, tupfiles)?;
         } else if name == "Tupfile" || name == "Tupfile.lua" {
-            let rel = path.strip_prefix(root)
+            let rel = path
+                .strip_prefix(root)
                 .map_err(|_| "failed to strip prefix".to_string())?;
             tupfiles.push(rel.to_path_buf());
         }
@@ -208,8 +206,7 @@ mod tests {
 
         let result = scan_directory(tmp.path()).unwrap();
 
-        let paths: BTreeSet<String> = result.new_files.iter()
-            .map(|f| f.path.clone()).collect();
+        let paths: BTreeSet<String> = result.new_files.iter().map(|f| f.path.clone()).collect();
         assert!(paths.contains("a.c"));
         assert!(paths.contains("b.c"));
         assert!(paths.contains("src/lib.c"));
@@ -225,8 +222,7 @@ mod tests {
         std::fs::write(tmp.path().join("Tupfile"), "").unwrap();
 
         let result = scan_directory(tmp.path()).unwrap();
-        let paths: Vec<&str> = result.new_files.iter()
-            .map(|f| f.path.as_str()).collect();
+        let paths: Vec<&str> = result.new_files.iter().map(|f| f.path.as_str()).collect();
         assert!(paths.contains(&"Tupfile"));
         assert!(!paths.iter().any(|p| p.contains(".tup")));
     }
@@ -244,9 +240,21 @@ mod tests {
     #[test]
     fn test_diff_scan() {
         let scanned = vec![
-            ScannedFile { path: "a.c".to_string(), mtime: 100, mtime_ns: 0 },
-            ScannedFile { path: "b.c".to_string(), mtime: 200, mtime_ns: 0 },
-            ScannedFile { path: "new.c".to_string(), mtime: 300, mtime_ns: 0 },
+            ScannedFile {
+                path: "a.c".to_string(),
+                mtime: 100,
+                mtime_ns: 0,
+            },
+            ScannedFile {
+                path: "b.c".to_string(),
+                mtime: 200,
+                mtime_ns: 0,
+            },
+            ScannedFile {
+                path: "new.c".to_string(),
+                mtime: 300,
+                mtime_ns: 0,
+            },
         ];
 
         let mut known = BTreeSet::new();

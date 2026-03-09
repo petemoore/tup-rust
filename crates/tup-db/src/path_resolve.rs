@@ -69,9 +69,10 @@ pub fn resolve_path(
         } else {
             // Look up child directory
             match db.node_select(current, component)? {
-                Some(row) if row.node_type == NodeType::Dir
-                    || row.node_type == NodeType::GeneratedDir
-                    || row.node_type == NodeType::Ghost =>
+                Some(row)
+                    if row.node_type == NodeType::Dir
+                        || row.node_type == NodeType::GeneratedDir
+                        || row.node_type == NodeType::Ghost =>
                 {
                     current = row.id;
                 }
@@ -106,12 +107,10 @@ pub fn resolve_full_path(
     let (dir_id, filename) = resolve_path(db, cache, start_dir, path)?;
 
     match filename {
-        Some(name) => {
-            match db.node_select(dir_id, &name)? {
-                Some(row) => Ok(Some(row.id)),
-                None => Ok(None),
-            }
-        }
+        Some(name) => match db.node_select(dir_id, &name)? {
+            Some(row) => Ok(Some(row.id)),
+            None => Ok(None),
+        },
         None => Ok(Some(dir_id)),
     }
 }
@@ -123,11 +122,7 @@ pub fn resolve_full_path(
 ///   a NORMAL link from the referenced file to the current directory.
 /// - This ensures that when the referenced file changes, the current
 ///   directory's Tupfile is re-parsed.
-pub fn add_dir_input(
-    db: &TupDb,
-    from_file_id: TupId,
-    to_dir_id: TupId,
-) -> DbResult<()> {
+pub fn add_dir_input(db: &TupDb, from_file_id: TupId, to_dir_id: TupId) -> DbResult<()> {
     // Directory-level inputs always use NORMAL links (not sticky)
     // as verified in C source: "All links to directories should be TUP_LINK_NORMAL"
     db.link_insert(from_file_id, to_dir_id, tup_types::LinkType::Normal)?;
@@ -150,7 +145,8 @@ mod tests {
     fn test_resolve_simple_file() {
         let (db, mut cache) = setup();
         db.begin().unwrap();
-        db.node_insert(DOT_DT, "main.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        db.node_insert(DOT_DT, "main.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
 
         let (dir, name) = resolve_path(&db, &mut cache, DOT_DT, "main.c").unwrap();
         assert_eq!(dir, DOT_DT);
@@ -162,8 +158,11 @@ mod tests {
     fn test_resolve_subdirectory_file() {
         let (db, mut cache) = setup();
         db.begin().unwrap();
-        let sub = db.node_insert(DOT_DT, "src", NodeType::Dir, 0, 0, -1, None, None).unwrap();
-        db.node_insert(sub, "main.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        let sub = db
+            .node_insert(DOT_DT, "src", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
+        db.node_insert(sub, "main.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
 
         let (dir, name) = resolve_path(&db, &mut cache, DOT_DT, "src/main.c").unwrap();
         assert_eq!(dir, sub);
@@ -175,7 +174,9 @@ mod tests {
     fn test_resolve_parent_dir() {
         let (db, mut cache) = setup();
         db.begin().unwrap();
-        let sub = db.node_insert(DOT_DT, "src", NodeType::Dir, 0, 0, -1, None, None).unwrap();
+        let sub = db
+            .node_insert(DOT_DT, "src", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
         cache.load(&db, sub).unwrap();
 
         // From src, go up with ..
@@ -197,7 +198,9 @@ mod tests {
     fn test_resolve_full_path_found() {
         let (db, mut cache) = setup();
         db.begin().unwrap();
-        let file_id = db.node_insert(DOT_DT, "test.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        let file_id = db
+            .node_insert(DOT_DT, "test.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
 
         let result = resolve_full_path(&db, &mut cache, DOT_DT, "test.c").unwrap();
         assert_eq!(result, Some(file_id));
@@ -215,11 +218,17 @@ mod tests {
     fn test_add_dir_input() {
         let (db, _cache) = setup();
         db.begin().unwrap();
-        let file = db.node_insert(DOT_DT, "rules.tup", NodeType::File, 0, 0, -1, None, None).unwrap();
-        let dir = db.node_insert(DOT_DT, "subdir", NodeType::Dir, 0, 0, -1, None, None).unwrap();
+        let file = db
+            .node_insert(DOT_DT, "rules.tup", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
+        let dir = db
+            .node_insert(DOT_DT, "subdir", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
 
         add_dir_input(&db, file, dir).unwrap();
-        assert!(db.link_exists(file, dir, tup_types::LinkType::Normal).unwrap());
+        assert!(db
+            .link_exists(file, dir, tup_types::LinkType::Normal)
+            .unwrap());
         db.commit().unwrap();
     }
 }

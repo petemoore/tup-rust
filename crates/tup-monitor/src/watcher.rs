@@ -56,9 +56,11 @@ impl Monitor {
             if let Ok(event) = res {
                 let _ = tx.send(event);
             }
-        }).map_err(|e| format!("failed to create watcher: {e}"))?;
+        })
+        .map_err(|e| format!("failed to create watcher: {e}"))?;
 
-        watcher.watch(&self.root, RecursiveMode::Recursive)
+        watcher
+            .watch(&self.root, RecursiveMode::Recursive)
             .map_err(|e| format!("failed to watch directory: {e}"))?;
 
         self.running = true;
@@ -122,7 +124,8 @@ impl Monitor {
             }
         }
         // Ignore hidden files
-        path.split('/').any(|component| component.starts_with('.') && component != ".")
+        path.split('/')
+            .any(|component| component.starts_with('.') && component != ".")
     }
 }
 
@@ -168,10 +171,22 @@ mod tests {
     #[test]
     fn test_deduplicate_events() {
         let events = vec![
-            FileEvent { kind: FileEventKind::Created, path: "a.c".to_string() },
-            FileEvent { kind: FileEventKind::Modified, path: "a.c".to_string() },
-            FileEvent { kind: FileEventKind::Created, path: "b.c".to_string() },
-            FileEvent { kind: FileEventKind::Modified, path: "a.c".to_string() },
+            FileEvent {
+                kind: FileEventKind::Created,
+                path: "a.c".to_string(),
+            },
+            FileEvent {
+                kind: FileEventKind::Modified,
+                path: "a.c".to_string(),
+            },
+            FileEvent {
+                kind: FileEventKind::Created,
+                path: "b.c".to_string(),
+            },
+            FileEvent {
+                kind: FileEventKind::Modified,
+                path: "a.c".to_string(),
+            },
         ];
 
         let deduped = deduplicate_events(&events);

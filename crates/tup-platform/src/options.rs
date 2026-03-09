@@ -10,7 +10,7 @@ const OPTION_DEFAULTS: &[(&str, &str)] = &[
     ("updater.full_deps", "0"),
     ("updater.warnings", "1"),
     ("display.color", "auto"),
-    ("display.width", ""),   // Empty = auto-detect terminal width
+    ("display.width", ""),    // Empty = auto-detect terminal width
     ("display.progress", ""), // Empty = auto-detect if stdout is a tty
     ("display.job_numbers", "1"),
     ("display.job_time", "1"),
@@ -135,7 +135,9 @@ impl TupOptions {
     pub fn show(&self) -> Vec<(String, String)> {
         let mut result = Vec::new();
         for &(name, _) in OPTION_DEFAULTS {
-            let value = self.values.get(name)
+            let value = self
+                .values
+                .get(name)
                 .map(|s| s.as_str())
                 .unwrap_or("(unset)");
             result.push((name.to_string(), value.to_string()));

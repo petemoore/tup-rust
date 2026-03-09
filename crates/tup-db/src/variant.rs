@@ -144,9 +144,7 @@ impl VariantRegistry {
 
     /// Get all non-root variants.
     pub fn non_root_variants(&self) -> Vec<&Variant> {
-        self.variants.values()
-            .filter(|v| !v.root_variant)
-            .collect()
+        self.variants.values().filter(|v| !v.root_variant).collect()
     }
 }
 

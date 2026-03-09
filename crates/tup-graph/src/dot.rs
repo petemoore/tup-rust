@@ -1,5 +1,5 @@
-use tup_types::{LinkType, NodeType, TupId};
 use crate::graph::Graph;
+use tup_types::{LinkType, NodeType, TupId};
 
 /// Options for DOT graph generation.
 #[derive(Default)]
@@ -36,8 +36,8 @@ where
             continue;
         }
 
-        let (label, _) = name_fn(id)
-            .unwrap_or_else(|| (format!("node_{}", id.raw()), node.node_type));
+        let (label, _) =
+            name_fn(id).unwrap_or_else(|| (format!("node_{}", id.raw()), node.node_type));
 
         let (shape, color) = node_style(node.node_type);
 
@@ -45,7 +45,10 @@ where
         let escaped = label.replace('\\', "\\\\").replace('"', "\\\"");
         dot.push_str(&format!(
             "  n{} [label=\"{}\", shape={}, fillcolor=\"{}\"];\n",
-            id.raw(), escaped, shape, color,
+            id.raw(),
+            escaped,
+            shape,
+            color,
         ));
     }
 
@@ -59,7 +62,8 @@ where
 
         // Skip edges to/from hidden node types
         if !opts.show_dirs {
-            if let (Some(src), Some(dest)) = (graph.find_node(edge.src), graph.find_node(edge.dest)) {
+            if let (Some(src), Some(dest)) = (graph.find_node(edge.src), graph.find_node(edge.dest))
+            {
                 if src.node_type.is_dir() || dest.node_type.is_dir() {
                     continue;
                 }
@@ -74,7 +78,9 @@ where
 
         dot.push_str(&format!(
             "  n{} -> n{}[{}];\n",
-            edge.src.raw(), edge.dest.raw(), style,
+            edge.src.raw(),
+            edge.dest.raw(),
+            style,
         ));
     }
 
@@ -107,7 +113,11 @@ pub fn rules_to_dot(rules: &[(String, Vec<String>, String, Vec<String>)]) -> Str
     let mut next_id = 0u64;
     let mut file_ids: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
 
-    let mut alloc_id = || { let id = next_id; next_id += 1; id };
+    let mut alloc_id = || {
+        let id = next_id;
+        next_id += 1;
+        id
+    };
 
     for (dir, inputs, command, outputs) in rules {
         // Command node
@@ -118,7 +128,11 @@ pub fn rules_to_dot(rules: &[(String, Vec<String>, String, Vec<String>)]) -> Str
             command.clone()
         };
         let escaped = cmd_label.replace('\\', "\\\\").replace('"', "\\\"");
-        let dir_prefix = if dir.is_empty() { String::new() } else { format!("{dir}/") };
+        let dir_prefix = if dir.is_empty() {
+            String::new()
+        } else {
+            format!("{dir}/")
+        };
         dot.push_str(&format!(
             "  n{cmd_id} [label=\"{escaped}\", shape=rectangle, fillcolor=\"#d5f5e3\"];\n",
         ));
@@ -162,14 +176,12 @@ mod tests {
 
     #[test]
     fn test_rules_to_dot_basic() {
-        let rules = vec![
-            (
-                "".to_string(),
-                vec!["main.c".to_string()],
-                "gcc -c main.c -o main.o".to_string(),
-                vec!["main.o".to_string()],
-            ),
-        ];
+        let rules = vec![(
+            "".to_string(),
+            vec!["main.c".to_string()],
+            "gcc -c main.c -o main.o".to_string(),
+            vec!["main.o".to_string()],
+        )];
 
         let dot = rules_to_dot(&rules);
         assert!(dot.contains("digraph G"));
@@ -207,14 +219,12 @@ mod tests {
     #[test]
     fn test_rules_to_dot_long_command() {
         let long_cmd = "gcc -c -Wall -Werror -O2 -I/usr/include -I/usr/local/include -DFOO=bar very_long_source_file.c -o output.o";
-        let rules = vec![
-            (
-                "".to_string(),
-                vec!["input.c".to_string()],
-                long_cmd.to_string(),
-                vec!["output.o".to_string()],
-            ),
-        ];
+        let rules = vec![(
+            "".to_string(),
+            vec!["input.c".to_string()],
+            long_cmd.to_string(),
+            vec!["output.o".to_string()],
+        )];
 
         let dot = rules_to_dot(&rules);
         assert!(dot.contains("...")); // Long command truncated
@@ -222,14 +232,12 @@ mod tests {
 
     #[test]
     fn test_rules_to_dot_with_dir() {
-        let rules = vec![
-            (
-                "src".to_string(),
-                vec!["main.c".to_string()],
-                "gcc -c main.c".to_string(),
-                vec!["main.o".to_string()],
-            ),
-        ];
+        let rules = vec![(
+            "src".to_string(),
+            vec!["main.c".to_string()],
+            "gcc -c main.c".to_string(),
+            vec!["main.o".to_string()],
+        )];
 
         let dot = rules_to_dot(&rules);
         assert!(dot.contains("src/main.c"));

@@ -170,8 +170,7 @@ impl EntryCache {
             return Ok(self.entries.get(&id).unwrap());
         }
 
-        let row = db.node_select_by_id(id)?
-            .ok_or(DbError::NodeNotFound(id))?;
+        let row = db.node_select_by_id(id)?.ok_or(DbError::NodeNotFound(id))?;
 
         let entry = TupEntry::from_node_row(&row);
         let parent_dt = entry.dt;
@@ -311,7 +310,8 @@ impl EntryCache {
         let end_path = self.ancestor_chain(end)?;
 
         // Find common prefix length
-        let common = start_path.iter()
+        let common = start_path
+            .iter()
             .zip(end_path.iter())
             .take_while(|(a, b)| a == b)
             .count();
@@ -417,7 +417,9 @@ mod tests {
         assert!(found.is_some());
         assert_eq!(found.unwrap().id, TupId::new(3));
 
-        assert!(cache.find_name_in_dir(TupId::new(1), "nonexistent").is_none());
+        assert!(cache
+            .find_name_in_dir(TupId::new(1), "nonexistent")
+            .is_none());
     }
 
     #[test]
@@ -458,7 +460,9 @@ mod tests {
         cache.add(make_entry(1, 0, ".", NodeType::Dir));
         cache.add(make_entry(2, 1, "old.c", NodeType::File));
 
-        cache.change_name(TupId::new(2), "new.c", TupId::new(1)).unwrap();
+        cache
+            .change_name(TupId::new(2), "new.c", TupId::new(1))
+            .unwrap();
 
         assert!(cache.find_name_in_dir(TupId::new(1), "old.c").is_none());
         assert!(cache.find_name_in_dir(TupId::new(1), "new.c").is_some());
@@ -471,7 +475,10 @@ mod tests {
         cache.add(make_entry(1, 0, "cmd", NodeType::Cmd));
 
         cache.change_display(TupId::new(1), Some("CC main.c"));
-        assert_eq!(cache.get(TupId::new(1)).display, Some("CC main.c".to_string()));
+        assert_eq!(
+            cache.get(TupId::new(1)).display,
+            Some("CC main.c".to_string())
+        );
     }
 
     #[test]
@@ -525,7 +532,10 @@ mod tests {
         cache.add(make_entry(3, 2, "lib", NodeType::Dir));
         cache.add(make_entry(4, 3, "main.c", NodeType::File));
 
-        assert_eq!(cache.full_path(TupId::new(4)), Some("src/lib/main.c".to_string()));
+        assert_eq!(
+            cache.full_path(TupId::new(4)),
+            Some("src/lib/main.c".to_string())
+        );
         assert_eq!(cache.full_path(TupId::new(2)), Some("src".to_string()));
     }
 
@@ -562,9 +572,13 @@ mod tests {
         db.begin().unwrap();
 
         // Create a directory under root
-        let dir_id = db.node_insert(DOT_DT, "mydir", NodeType::Dir, -1, 0, -1, None, None).unwrap();
+        let dir_id = db
+            .node_insert(DOT_DT, "mydir", NodeType::Dir, -1, 0, -1, None, None)
+            .unwrap();
         // Create a file under that directory
-        let file_id = db.node_insert(dir_id, "hello.c", NodeType::File, 1000, 0, -1, None, None).unwrap();
+        let file_id = db
+            .node_insert(dir_id, "hello.c", NodeType::File, 1000, 0, -1, None, None)
+            .unwrap();
         db.commit().unwrap();
 
         let mut cache = EntryCache::new();
@@ -587,8 +601,10 @@ mod tests {
     fn test_load_dir() {
         let db = TupDb::create_in_memory().unwrap();
         db.begin().unwrap();
-        db.node_insert(DOT_DT, "a.c", NodeType::File, 0, 0, -1, None, None).unwrap();
-        db.node_insert(DOT_DT, "b.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        db.node_insert(DOT_DT, "a.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
+        db.node_insert(DOT_DT, "b.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
         db.commit().unwrap();
 
         let mut cache = EntryCache::new();

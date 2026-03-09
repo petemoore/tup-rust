@@ -44,13 +44,18 @@ impl BangDb {
         // Check for alias: !name = !other
         if definition.starts_with('!') {
             let other_name = definition.trim_start_matches('!');
-            let other = self.macros.get(other_name)
+            let other = self
+                .macros
+                .get(other_name)
                 .ok_or_else(|| format!("unknown !-macro '!{other_name}'"))?
                 .clone();
-            self.macros.insert(name.to_string(), BangMacro {
-                name: name.to_string(),
-                ..other
-            });
+            self.macros.insert(
+                name.to_string(),
+                BangMacro {
+                    name: name.to_string(),
+                    ..other
+                },
+            );
             return Ok(());
         }
 
@@ -64,32 +69,59 @@ impl BangDb {
         let (foreach, input) = if input_section == "foreach" {
             (true, None)
         } else if let Some(rest) = input_section.strip_prefix("foreach ") {
-            (true, if rest.trim().is_empty() { None } else { Some(rest.trim().to_string()) })
+            (
+                true,
+                if rest.trim().is_empty() {
+                    None
+                } else {
+                    Some(rest.trim().to_string())
+                },
+            )
         } else {
-            (false, if input_section.is_empty() { None } else { Some(input_section.to_string()) })
+            (
+                false,
+                if input_section.is_empty() {
+                    None
+                } else {
+                    Some(input_section.to_string())
+                },
+            )
         };
 
         let command = parts[1].trim().to_string();
 
         let output_text = parts[2..].join("|>");
         let (outputs, extra_outputs) = if let Some(pipe_pos) = output_text.find(" | ") {
-            let outs: Vec<String> = output_text[..pipe_pos].split_whitespace()
-                .map(|s| s.to_string()).collect();
-            let extras: Vec<String> = output_text[pipe_pos + 3..].split_whitespace()
-                .map(|s| s.to_string()).collect();
+            let outs: Vec<String> = output_text[..pipe_pos]
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            let extras: Vec<String> = output_text[pipe_pos + 3..]
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
             (outs, extras)
         } else {
-            (output_text.split_whitespace().map(|s| s.to_string()).collect(), vec![])
+            (
+                output_text
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect(),
+                vec![],
+            )
         };
 
-        self.macros.insert(name.to_string(), BangMacro {
-            name: name.to_string(),
-            foreach,
-            input,
-            command,
-            outputs,
-            extra_outputs,
-        });
+        self.macros.insert(
+            name.to_string(),
+            BangMacro {
+                name: name.to_string(),
+                foreach,
+                input,
+                command,
+                outputs,
+                extra_outputs,
+            },
+        );
 
         Ok(())
     }
@@ -111,12 +143,14 @@ impl BangDb {
         rule_outputs: &[String],
         line_number: usize,
     ) -> Result<Rule, String> {
-        let mac = self.get(macro_name)
+        let mac = self
+            .get(macro_name)
             .ok_or_else(|| format!("unknown !-macro '!{macro_name}'"))?;
 
         // Merge inputs: rule inputs override macro inputs
         let inputs = if rule_inputs.is_empty() {
-            mac.input.as_ref()
+            mac.input
+                .as_ref()
                 .map(|i| i.split_whitespace().map(|s| s.to_string()).collect())
                 .unwrap_or_default()
         } else {
@@ -176,7 +210,8 @@ mod tests {
     #[test]
     fn test_define_foreach_macro() {
         let mut db = BangDb::new();
-        db.define("cc", "foreach |> gcc -c %f -o %o |> %B.o").unwrap();
+        db.define("cc", "foreach |> gcc -c %f -o %o |> %B.o")
+            .unwrap();
 
         let mac = db.get("cc").unwrap();
         assert!(mac.foreach);
@@ -194,7 +229,8 @@ mod tests {
     #[test]
     fn test_define_macro_with_extras() {
         let mut db = BangDb::new();
-        db.define("cc", "|> gcc -c %f -o %o -MD -MF %O.d |> %B.o | %B.o.d").unwrap();
+        db.define("cc", "|> gcc -c %f -o %o -MD -MF %O.d |> %B.o | %B.o.d")
+            .unwrap();
 
         let mac = db.get("cc").unwrap();
         assert_eq!(mac.outputs, vec!["%B.o"]);
@@ -223,12 +259,9 @@ mod tests {
         let mut db = BangDb::new();
         db.define("cc", "|> gcc -c %f -o %o |> %B.o").unwrap();
 
-        let rule = db.expand_rule(
-            "cc",
-            &["main.c".to_string()],
-            &[],
-            1,
-        ).unwrap();
+        let rule = db
+            .expand_rule("cc", &["main.c".to_string()], &[], 1)
+            .unwrap();
 
         assert_eq!(rule.inputs, vec!["main.c"]);
         assert_eq!(rule.command.command, "gcc -c %f -o %o");
@@ -240,12 +273,9 @@ mod tests {
         let mut db = BangDb::new();
         db.define("cc", "|> gcc -c %f -o %o |> %B.o").unwrap();
 
-        let rule = db.expand_rule(
-            "cc",
-            &["main.c".to_string()],
-            &["custom.o".to_string()],
-            1,
-        ).unwrap();
+        let rule = db
+            .expand_rule("cc", &["main.c".to_string()], &["custom.o".to_string()], 1)
+            .unwrap();
 
         assert_eq!(rule.outputs, vec!["custom.o"]);
     }

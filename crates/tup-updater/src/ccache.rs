@@ -40,9 +40,14 @@ impl CcacheConfig {
 
         matches!(
             basename.as_str(),
-            "gcc" | "g++" | "cc" | "c++"
-                | "clang" | "clang++"
-                | "arm-none-eabi-gcc" | "arm-none-eabi-g++"
+            "gcc"
+                | "g++"
+                | "cc"
+                | "c++"
+                | "clang"
+                | "clang++"
+                | "arm-none-eabi-gcc"
+                | "arm-none-eabi-g++"
         ) || basename.ends_with("-gcc")
             || basename.ends_with("-g++")
             || basename.ends_with("-cc")
@@ -97,7 +102,9 @@ mod tests {
     #[test]
     fn test_is_cacheable_gcc() {
         assert!(CcacheConfig::is_cacheable_command("gcc -c foo.c -o foo.o"));
-        assert!(CcacheConfig::is_cacheable_command("g++ -c foo.cpp -o foo.o"));
+        assert!(CcacheConfig::is_cacheable_command(
+            "g++ -c foo.cpp -o foo.o"
+        ));
         assert!(CcacheConfig::is_cacheable_command("cc -c foo.c"));
         assert!(CcacheConfig::is_cacheable_command("clang -c foo.c"));
         assert!(CcacheConfig::is_cacheable_command("clang++ -c foo.cpp"));
@@ -105,7 +112,9 @@ mod tests {
 
     #[test]
     fn test_is_cacheable_cross() {
-        assert!(CcacheConfig::is_cacheable_command("arm-none-eabi-gcc -c foo.c"));
+        assert!(CcacheConfig::is_cacheable_command(
+            "arm-none-eabi-gcc -c foo.c"
+        ));
         assert!(CcacheConfig::is_cacheable_command("/usr/bin/gcc -c foo.c"));
     }
 

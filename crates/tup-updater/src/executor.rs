@@ -92,7 +92,9 @@ impl Updater {
                 let input = InputFile::new(input_str);
 
                 // Expand output patterns for this input
-                let outputs: Vec<String> = rule.outputs.iter()
+                let outputs: Vec<String> = rule
+                    .outputs
+                    .iter()
                     .map(|pat| expand_output_pattern(pat, &input))
                     .collect();
 
@@ -104,7 +106,8 @@ impl Updater {
                     &self.dir_name(),
                 );
 
-                let result = self.execute_command(&cmd, rule.command.display.as_deref(), &outputs)?;
+                let result =
+                    self.execute_command(&cmd, rule.command.display.as_deref(), &outputs)?;
                 let failed = !result.success;
                 results.push(result);
 
@@ -114,12 +117,12 @@ impl Updater {
             }
         } else {
             // Execute once with all inputs
-            let inputs: Vec<InputFile> = expanded_inputs.iter()
-                .map(|s| InputFile::new(s))
-                .collect();
+            let inputs: Vec<InputFile> =
+                expanded_inputs.iter().map(|s| InputFile::new(s)).collect();
 
             let outputs: Vec<String> = if !inputs.is_empty() {
-                rule.outputs.iter()
+                rule.outputs
+                    .iter()
                     .map(|pat| {
                         if pat.contains('%') {
                             if let Some(first) = inputs.first() {
@@ -161,7 +164,11 @@ impl Updater {
         self.commands_run += 1;
 
         // Show what we're doing
-        let total = if self.total_expected > 0 { self.total_expected } else { self.commands_run };
+        let total = if self.total_expected > 0 {
+            self.total_expected
+        } else {
+            self.commands_run
+        };
         if let Some(disp) = display {
             eprintln!(" [{}/{}] {}", self.commands_run, total, disp);
         } else {
@@ -324,12 +331,17 @@ impl Updater {
             if rule.foreach {
                 for input_str in &expanded_inputs {
                     let input = InputFile::new(input_str);
-                    let outputs: Vec<String> = rule.outputs.iter()
+                    let outputs: Vec<String> = rule
+                        .outputs
+                        .iter()
                         .map(|pat| expand_output_pattern(pat, &input))
                         .collect();
                     let cmd = expand_percent(
-                        &rule.command.command, &[input], &outputs,
-                        &rule.order_only_inputs, &self.dir_name(),
+                        &rule.command.command,
+                        &[input],
+                        &outputs,
+                        &rule.order_only_inputs,
+                        &self.dir_name(),
                     );
                     commands.push(ExpandedCommand {
                         cmd,
@@ -339,21 +351,31 @@ impl Updater {
                     });
                 }
             } else {
-                let inputs: Vec<InputFile> = expanded_inputs.iter()
-                    .map(|s| InputFile::new(s))
-                    .collect();
+                let inputs: Vec<InputFile> =
+                    expanded_inputs.iter().map(|s| InputFile::new(s)).collect();
                 let outputs: Vec<String> = if !inputs.is_empty() {
-                    rule.outputs.iter()
+                    rule.outputs
+                        .iter()
                         .map(|pat| {
                             if pat.contains('%') {
-                                inputs.first().map(|f| expand_output_pattern(pat, f))
+                                inputs
+                                    .first()
+                                    .map(|f| expand_output_pattern(pat, f))
                                     .unwrap_or_else(|| pat.clone())
-                            } else { pat.clone() }
-                        }).collect()
-                } else { rule.outputs.clone() };
+                            } else {
+                                pat.clone()
+                            }
+                        })
+                        .collect()
+                } else {
+                    rule.outputs.clone()
+                };
                 let cmd = expand_percent(
-                    &rule.command.command, &inputs, &outputs,
-                    &rule.order_only_inputs, &self.dir_name(),
+                    &rule.command.command,
+                    &inputs,
+                    &outputs,
+                    &rule.order_only_inputs,
+                    &self.dir_name(),
                 );
                 commands.push(ExpandedCommand {
                     cmd,
@@ -436,12 +458,21 @@ impl Updater {
                                 eprintln!(" [{n}/{total}] {}", ec.cmd);
                             }
 
-                            let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
-                            let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+                            let shell = if cfg!(target_os = "windows") {
+                                "cmd"
+                            } else {
+                                "sh"
+                            };
+                            let flag = if cfg!(target_os = "windows") {
+                                "/C"
+                            } else {
+                                "-c"
+                            };
                             let start = Instant::now();
 
                             let output = Command::new(shell)
-                                .arg(flag).arg(&ec.cmd)
+                                .arg(flag)
+                                .arg(&ec.cmd)
                                 .current_dir(&work_dir)
                                 .stdout(Stdio::piped())
                                 .stderr(Stdio::piped())
@@ -462,7 +493,7 @@ impl Updater {
 
             let wave_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
             self.commands_run += wave_results.len();
-            let wave_failed = wave_results.iter().filter(|(_,r)| !r.success).count();
+            let wave_failed = wave_results.iter().filter(|(_, r)| !r.success).count();
             self.commands_failed += wave_failed;
 
             for (idx, result) in wave_results {
@@ -494,14 +525,15 @@ impl Updater {
         }
 
         // Convert rules directly to ExpandedCommands without expansion
-        let commands: Vec<ExpandedCommand> = rules.iter().map(|rule| {
-            ExpandedCommand {
+        let commands: Vec<ExpandedCommand> = rules
+            .iter()
+            .map(|rule| ExpandedCommand {
                 cmd: rule.command.command.clone(),
                 display: rule.command.display.clone(),
                 inputs: rule.inputs.clone(),
                 outputs: rule.outputs.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         self.execute_commands_parallel(commands, num_jobs)
     }
@@ -580,12 +612,21 @@ impl Updater {
                                 eprintln!(" [{n}/{total}] {}", ec.cmd);
                             }
 
-                            let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
-                            let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+                            let shell = if cfg!(target_os = "windows") {
+                                "cmd"
+                            } else {
+                                "sh"
+                            };
+                            let flag = if cfg!(target_os = "windows") {
+                                "/C"
+                            } else {
+                                "-c"
+                            };
                             let start = Instant::now();
 
                             let output = Command::new(shell)
-                                .arg(flag).arg(&ec.cmd)
+                                .arg(flag)
+                                .arg(&ec.cmd)
                                 .current_dir(&work_dir)
                                 .stdout(Stdio::piped())
                                 .stderr(Stdio::piped())
@@ -606,7 +647,7 @@ impl Updater {
 
             let wave_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
             self.commands_run += wave_results.len();
-            let wave_failed = wave_results.iter().filter(|(_,r)| !r.success).count();
+            let wave_failed = wave_results.iter().filter(|(_, r)| !r.success).count();
             self.commands_failed += wave_failed;
 
             for (idx, result) in wave_results {
@@ -907,10 +948,7 @@ mod tests {
         let mut updater = Updater::new(tmp.path());
 
         assert_eq!(updater.commands_run(), 0);
-        let rules = vec![
-            make_rule(&[], "true", &[]),
-            make_rule(&[], "true", &[]),
-        ];
+        let rules = vec![make_rule(&[], "true", &[]), make_rule(&[], "true", &[])];
         updater.execute_rules(&rules).unwrap();
         assert_eq!(updater.commands_run(), 2);
         assert_eq!(updater.commands_failed(), 0);
@@ -978,9 +1016,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut updater = Updater::new(tmp.path());
 
-        let rules = vec![
-            make_rule(&[], "echo ok > out.txt", &["out.txt"]),
-        ];
+        let rules = vec![make_rule(&[], "echo ok > out.txt", &["out.txt"])];
 
         let results = updater.execute_rules_parallel(&rules, 1).unwrap();
         assert_eq!(results.len(), 1);

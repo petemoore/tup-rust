@@ -201,7 +201,10 @@ mod tests {
     #[test]
     fn test_fuse_config() {
         let config = FuseConfig::new(Path::new("/home/user/project"));
-        assert_eq!(config.mount_point, PathBuf::from("/home/user/project/.tup/mnt"));
+        assert_eq!(
+            config.mount_point,
+            PathBuf::from("/home/user/project/.tup/mnt")
+        );
         assert!(config.single_threaded);
     }
 
@@ -221,7 +224,10 @@ mod tests {
     fn test_passthrough_real_path() {
         let fuse = PassthroughFuse::new(Path::new("/home/user/project"), 1);
         assert_eq!(fuse.real_path("/"), PathBuf::from("/home/user/project"));
-        assert_eq!(fuse.real_path("/src/main.c"), PathBuf::from("/home/user/project/src/main.c"));
+        assert_eq!(
+            fuse.real_path("/src/main.c"),
+            PathBuf::from("/home/user/project/src/main.c")
+        );
     }
 
     #[test]

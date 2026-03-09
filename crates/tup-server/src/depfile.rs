@@ -126,8 +126,7 @@ pub fn read_depfile(path: &Path) -> std::io::Result<Vec<FileAccess>> {
             None
         };
 
-        let access_type = AccessType::from_i32(at)
-            .unwrap_or(AccessType::Read);
+        let access_type = AccessType::from_i32(at).unwrap_or(AccessType::Read);
 
         events.push(FileAccess {
             access_type,
@@ -182,7 +181,8 @@ impl FileAccessSummary {
 
     /// Check if a file was read but not declared as an input.
     pub fn undeclared_reads(&self, declared_inputs: &[String]) -> Vec<String> {
-        self.reads.iter()
+        self.reads
+            .iter()
             .filter(|r| !declared_inputs.contains(r))
             .filter(|r| !self.is_ignorable(r))
             .cloned()
@@ -191,7 +191,8 @@ impl FileAccessSummary {
 
     /// Check if a file was written but not declared as an output.
     pub fn undeclared_writes(&self, declared_outputs: &[String]) -> Vec<String> {
-        self.writes.iter()
+        self.writes
+            .iter()
             .filter(|w| !declared_outputs.contains(w))
             .filter(|w| !self.is_ignorable(w))
             .cloned()
