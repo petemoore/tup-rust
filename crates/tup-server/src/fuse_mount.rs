@@ -16,6 +16,16 @@ const TUP_MNT: &str = ".tup/mnt";
 /// Temporary file directory relative to project root.
 const TUP_TMP: &str = ".tup/tmp";
 
+/// Shared job registry type.
+pub type JobRegistry = std::sync::Arc<
+    std::sync::RwLock<
+        std::collections::BTreeMap<
+            i64,
+            std::sync::Arc<std::sync::Mutex<crate::tup_fuse::FileInfo>>,
+        >,
+    >,
+>;
+
 /// Handle for a mounted FUSE filesystem.
 ///
 /// When dropped, the filesystem is unmounted.
@@ -26,6 +36,9 @@ pub struct FuseMount {
     mount_point: PathBuf,
     /// Project root.
     tup_top: PathBuf,
+    /// Shared job registry — allows registering/unregistering jobs
+    /// from outside the FUSE thread.
+    jobs: JobRegistry,
 }
 
 impl FuseMount {
@@ -74,6 +87,7 @@ impl FuseMount {
 
         // Create the FUSE filesystem and mount it
         let fs = TupFuseFs::new(tup_top);
+        let jobs = fs.jobs();
 
         // fuser mount options matching C tup:
         // -s (single-threaded), -f (foreground), -onobrowse (macOS)
@@ -112,6 +126,7 @@ impl FuseMount {
             _session: session,
             mount_point,
             tup_top: tup_top.to_path_buf(),
+            jobs,
         })
     }
 
@@ -123,6 +138,37 @@ impl FuseMount {
     /// Get the project root.
     pub fn tup_top(&self) -> &Path {
         &self.tup_top
+    }
+
+    /// Register a job for FUSE tracking.
+    ///
+    /// Port of C tup's tup_fuse_add_group(sid, &s->finfo).
+    /// Returns the FileInfo that will accumulate file accesses for this job.
+    pub fn register_job(
+        &self,
+        job_id: i64,
+    ) -> std::sync::Arc<std::sync::Mutex<crate::tup_fuse::FileInfo>> {
+        let finfo = std::sync::Arc::new(std::sync::Mutex::new(crate::tup_fuse::FileInfo::new()));
+        self.jobs.write().unwrap().insert(job_id, finfo.clone());
+        finfo
+    }
+
+    /// Unregister a job after execution completes.
+    ///
+    /// Port of C tup's tup_fuse_rm_group(&s->finfo).
+    pub fn unregister_job(&self, job_id: i64) {
+        self.jobs.write().unwrap().remove(&job_id);
+    }
+
+    /// Get the FUSE path for a job's working directory.
+    ///
+    /// In C tup, commands execute with CWD at `.tup/mnt/@tupjob-N/<dir>`.
+    /// This returns that path for a given job ID and directory.
+    pub fn job_path(&self, job_id: i64, dir: &Path) -> PathBuf {
+        let rel = dir.strip_prefix(&self.tup_top).unwrap_or(dir);
+        self.mount_point
+            .join(format!("@tupjob-{}", job_id))
+            .join(rel)
     }
 }
 
