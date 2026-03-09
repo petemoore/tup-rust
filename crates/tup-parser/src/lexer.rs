@@ -53,6 +53,8 @@ pub struct TupfileReader {
     vars: ParseVarDb,
     bangs: BangDb,
     lines: Vec<ParsedLine>,
+    /// The filename of the Tupfile being parsed.
+    filename: String,
     /// Whether `.gitignore` directive was found during evaluation.
     gitignore_requested: bool,
 }
@@ -71,6 +73,7 @@ impl TupfileReader {
             gitignore_requested: false,
             bangs: BangDb::new(),
             lines: Vec::new(),
+            filename: filename.to_string(),
         };
 
         let joined = join_continuation_lines(content);
@@ -162,7 +165,7 @@ impl TupfileReader {
                 TupfileLine::Ifdef(var) => {
                     if if_stack.len() >= MAX_IF_DEPTH {
                         return Err(ParseError::Syntax {
-                            file: String::new(),
+                            file: self.filename.clone(),
                             line: parsed.line_number,
                             message: "too many nested if statements".to_string(),
                         });
@@ -174,7 +177,7 @@ impl TupfileReader {
                 TupfileLine::Ifndef(var) => {
                     if if_stack.len() >= MAX_IF_DEPTH {
                         return Err(ParseError::Syntax {
-                            file: String::new(),
+                            file: self.filename.clone(),
                             line: parsed.line_number,
                             message: "too many nested if statements".to_string(),
                         });
@@ -186,7 +189,7 @@ impl TupfileReader {
                 TupfileLine::Ifeq(a, b) => {
                     if if_stack.len() >= MAX_IF_DEPTH {
                         return Err(ParseError::Syntax {
-                            file: String::new(),
+                            file: self.filename.clone(),
                             line: parsed.line_number,
                             message: "too many nested if statements".to_string(),
                         });
@@ -204,7 +207,7 @@ impl TupfileReader {
                 TupfileLine::Ifneq(a, b) => {
                     if if_stack.len() >= MAX_IF_DEPTH {
                         return Err(ParseError::Syntax {
-                            file: String::new(),
+                            file: self.filename.clone(),
                             line: parsed.line_number,
                             message: "too many nested if statements".to_string(),
                         });
@@ -224,7 +227,7 @@ impl TupfileReader {
                         *last = !*last;
                     } else {
                         return Err(ParseError::Syntax {
-                            file: String::new(),
+                            file: self.filename.clone(),
                             line: parsed.line_number,
                             message: "else statement outside of an if block".to_string(),
                         });
@@ -233,7 +236,7 @@ impl TupfileReader {
                 TupfileLine::Endif => {
                     if if_stack.pop().is_none() {
                         return Err(ParseError::Syntax {
-                            file: String::new(),
+                            file: self.filename.clone(),
                             line: parsed.line_number,
                             message: "endif statement outside of an if block".to_string(),
                         });
@@ -261,7 +264,7 @@ impl TupfileReader {
                             let expanded_def = self.vars.expand(definition);
                             if let Err(e) = self.bangs.define(name, &expanded_def) {
                                 return Err(ParseError::Syntax {
-                                    file: String::new(),
+                                    file: self.filename.clone(),
                                     line: parsed.line_number,
                                     message: e,
                                 });
@@ -283,7 +286,7 @@ impl TupfileReader {
                                     Ok(bang_expanded) => rules.push(bang_expanded),
                                     Err(e) => {
                                         return Err(ParseError::Syntax {
-                                            file: String::new(),
+                                            file: self.filename.clone(),
                                             line: rule.line_number,
                                             message: e,
                                         })
@@ -402,7 +405,7 @@ impl TupfileReader {
                                     .stderr(std::process::Stdio::piped())
                                     .output()
                                     .map_err(|e| ParseError::Syntax {
-                                        file: String::new(),
+                                        file: self.filename.clone(),
                                         line: parsed.line_number,
                                         message: format!(
                                             "failed to run script '{}': {e}",
@@ -413,7 +416,7 @@ impl TupfileReader {
                                 if !output.status.success() {
                                     let stderr = String::from_utf8_lossy(&output.stderr);
                                     return Err(ParseError::Syntax {
-                                        file: String::new(),
+                                        file: self.filename.clone(),
                                         line: parsed.line_number,
                                         message: format!(
                                             "run script '{}' failed: {}",
@@ -442,7 +445,7 @@ impl TupfileReader {
                         TupfileLine::Error(msg) => {
                             let expanded = self.vars.expand(msg);
                             return Err(ParseError::Syntax {
-                                file: String::new(),
+                                file: self.filename.clone(),
                                 line: parsed.line_number,
                                 message: format!(
                                     "Found 'error' command parsing Tupfile: {expanded}"
@@ -451,7 +454,7 @@ impl TupfileReader {
                         }
                         TupfileLine::Unknown(text) => {
                             return Err(ParseError::Syntax {
-                                file: String::new(),
+                                file: self.filename.clone(),
                                 line: parsed.line_number,
                                 message: format!("unrecognized line: '{text}'"),
                             });
@@ -466,10 +469,8 @@ impl TupfileReader {
 
         // Check for unclosed if blocks
         if !if_stack.is_empty() {
-            return Err(ParseError::Syntax {
-                file: String::new(),
-                line: 0,
-                message: "missing endif before EOF".to_string(),
+            return Err(ParseError::MissingEndif {
+                file: self.filename.clone(),
             });
         }
 
@@ -629,7 +630,7 @@ fn parse_line(line: &str, line_number: usize, filename: &str) -> Result<TupfileL
 
     // Rule (starts with `:`)
     if let Some(rest) = line.strip_prefix(':') {
-        let rule = Rule::parse(rest, line_number).map_err(|msg| ParseError::Syntax {
+        let rule = Rule::parse(rest, line_number).map_err(|msg| ParseError::RuleParse {
             file: filename.to_string(),
             line: line_number,
             message: msg,

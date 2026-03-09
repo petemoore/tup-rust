@@ -66,7 +66,7 @@ pub fn expand_percent(
     outputs: &[String],
     order_only: &[String],
     dir_name: &str,
-) -> String {
+) -> Result<String, String> {
     let mut result = String::with_capacity(command.len() * 2);
     let mut chars = command.chars().peekable();
 
@@ -132,13 +132,12 @@ pub fn expand_percent(
                     result.push_str(&order_only.join(" "));
                 }
                 Some(&c) => {
-                    // Unknown percent code — keep as-is
-                    result.push('%');
-                    result.push(c);
-                    chars.next();
+                    return Err(format!("Unknown %-flag: '{c}'"));
                 }
                 None => {
-                    result.push('%');
+                    return Err(format!(
+                        "Unfinished %-flag at the end of the string '{command}'"
+                    ));
                 }
             }
         } else {
@@ -146,14 +145,14 @@ pub fn expand_percent(
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Expand percent substitutions in output patterns.
 ///
 /// Output patterns like `%B.o` are expanded based on the current input.
 /// This is used for foreach rules where each input produces a different output.
-pub fn expand_output_pattern(pattern: &str, input: &InputFile) -> String {
+pub fn expand_output_pattern(pattern: &str, input: &InputFile) -> Result<String, String> {
     let mut result = String::with_capacity(pattern.len() * 2);
     let mut chars = pattern.chars().peekable();
 
@@ -185,12 +184,12 @@ pub fn expand_output_pattern(pattern: &str, input: &InputFile) -> String {
                     result.push_str(&input.path);
                 }
                 Some(&c) => {
-                    result.push('%');
-                    result.push(c);
-                    chars.next();
+                    return Err(format!("Unknown %-flag: '{c}'"));
                 }
                 None => {
-                    result.push('%');
+                    return Err(format!(
+                        "Unfinished %-flag at the end of the string '{pattern}'"
+                    ));
                 }
             }
         } else {
@@ -198,7 +197,25 @@ pub fn expand_output_pattern(pattern: &str, input: &InputFile) -> String {
         }
     }
 
-    result
+    Ok(result)
+}
+
+/// Check if an output path contains a hidden file component (starts with '.').
+/// Returns an error message if it does. Matches C tup's PG_HIDDEN check.
+pub fn validate_output_path(path: &str) -> Result<(), String> {
+    for component in Path::new(path).components() {
+        if let std::path::Component::Normal(s) = component {
+            if let Some(s) = s.to_str() {
+                if s.starts_with('.') {
+                    return Err(format!(
+                        "You specified a path '{}' that contains a hidden filename (since it begins with a '.' character). Tup ignores these files - please remove references to it from the Tupfile.",
+                        path
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -241,21 +258,21 @@ mod tests {
     #[test]
     fn test_expand_percent_f() {
         let inputs = make_inputs(&["a.c", "b.c", "c.c"]);
-        let result = expand_percent("gcc %f -o out", &inputs, &[], &[], ".");
+        let result = expand_percent("gcc %f -o out", &inputs, &[], &[], ".").unwrap();
         assert_eq!(result, "gcc a.c b.c c.c -o out");
     }
 
     #[test]
     fn test_expand_percent_b() {
         let inputs = make_inputs(&["src/a.c", "src/b.c"]);
-        let result = expand_percent("gcc %b", &inputs, &[], &[], ".");
+        let result = expand_percent("gcc %b", &inputs, &[], &[], ".").unwrap();
         assert_eq!(result, "gcc a.c b.c");
     }
 
     #[test]
     fn test_expand_percent_B() {
         let inputs = make_inputs(&["foo.c", "bar.c"]);
-        let result = expand_percent("%B.o", &inputs, &[], &[], ".");
+        let result = expand_percent("%B.o", &inputs, &[], &[], ".").unwrap();
         assert_eq!(result, "foo bar.o");
     }
 
@@ -263,40 +280,40 @@ mod tests {
     fn test_expand_percent_o() {
         let inputs = make_inputs(&["foo.c"]);
         let outputs = vec!["foo.o".to_string()];
-        let result = expand_percent("gcc -c %f -o %o", &inputs, &outputs, &[], ".");
+        let result = expand_percent("gcc -c %f -o %o", &inputs, &outputs, &[], ".").unwrap();
         assert_eq!(result, "gcc -c foo.c -o foo.o");
     }
 
     #[test]
     fn test_expand_percent_O() {
         let outputs = vec!["build/foo.o".to_string()];
-        let result = expand_percent("%O.d", &[], &outputs, &[], ".");
+        let result = expand_percent("%O.d", &[], &outputs, &[], ".").unwrap();
         assert_eq!(result, "build/foo.d");
     }
 
     #[test]
     fn test_expand_percent_e() {
         let inputs = make_inputs(&["test.cpp"]);
-        let result = expand_percent("ext=%e", &inputs, &[], &[], ".");
+        let result = expand_percent("ext=%e", &inputs, &[], &[], ".").unwrap();
         assert_eq!(result, "ext=cpp");
     }
 
     #[test]
     fn test_expand_percent_d() {
-        let result = expand_percent("dir=%d", &[], &[], &[], "myproject");
+        let result = expand_percent("dir=%d", &[], &[], &[], "myproject").unwrap();
         assert_eq!(result, "dir=myproject");
     }
 
     #[test]
     fn test_expand_percent_i() {
         let oo = vec!["config.h".to_string(), "types.h".to_string()];
-        let result = expand_percent("gcc %f %i", &[], &[], &oo, ".");
+        let result = expand_percent("gcc %f %i", &[], &[], &oo, ".").unwrap();
         assert_eq!(result, "gcc  config.h types.h");
     }
 
     #[test]
     fn test_expand_literal_percent() {
-        let result = expand_percent("echo 100%%", &[], &[], &[], ".");
+        let result = expand_percent("echo 100%%", &[], &[], &[], ".").unwrap();
         assert_eq!(result, "echo 100%");
     }
 
@@ -304,40 +321,44 @@ mod tests {
     fn test_expand_full_command() {
         let inputs = make_inputs(&["main.c"]);
         let outputs = vec!["main.o".to_string()];
-        let result = expand_percent("gcc -c %f -o %o -MD -MF %O.d", &inputs, &outputs, &[], ".");
+        let result =
+            expand_percent("gcc -c %f -o %o -MD -MF %O.d", &inputs, &outputs, &[], ".").unwrap();
         assert_eq!(result, "gcc -c main.c -o main.o -MD -MF main.d");
     }
 
     #[test]
     fn test_expand_output_pattern_B() {
         let input = InputFile::new("src/hello.c");
-        let result = expand_output_pattern("%B.o", &input);
+        let result = expand_output_pattern("%B.o", &input).unwrap();
         assert_eq!(result, "hello.o");
     }
 
     #[test]
     fn test_expand_output_pattern_b() {
         let input = InputFile::new("hello.c");
-        let result = expand_output_pattern("%b.bak", &input);
+        let result = expand_output_pattern("%b.bak", &input).unwrap();
         assert_eq!(result, "hello.c.bak");
     }
 
     #[test]
     fn test_expand_no_inputs() {
-        let result = expand_percent("echo hello > %o", &[], &["out.txt".to_string()], &[], ".");
+        let result =
+            expand_percent("echo hello > %o", &[], &["out.txt".to_string()], &[], ".").unwrap();
         assert_eq!(result, "echo hello > out.txt");
     }
 
     #[test]
     fn test_expand_unknown_percent() {
         let result = expand_percent("%z test", &[], &[], &[], ".");
-        assert_eq!(result, "%z test");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown %-flag: 'z'"));
     }
 
     #[test]
     fn test_expand_trailing_percent() {
         let result = expand_percent("test%", &[], &[], &[], ".");
-        assert_eq!(result, "test%");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unfinished %-flag"));
     }
 
     #[test]
@@ -350,16 +371,26 @@ mod tests {
         ];
 
         for input in &inputs {
-            let output = expand_output_pattern("%B.o", input);
+            let output = expand_output_pattern("%B.o", input).unwrap();
             let cmd = expand_percent(
                 "gcc -c %f -o %o",
                 std::slice::from_ref(input),
                 std::slice::from_ref(&output),
                 &[],
                 ".",
-            );
+            )
+            .unwrap();
             assert!(cmd.contains(&input.path));
             assert!(cmd.contains(&output));
         }
+    }
+
+    #[test]
+    fn test_validate_output_dotfile() {
+        assert!(validate_output_path(".git").is_err());
+        assert!(validate_output_path("foo/.git").is_err());
+        assert!(validate_output_path("foo/.git/baz").is_err());
+        assert!(validate_output_path("foo.o").is_ok());
+        assert!(validate_output_path("sub/foo.o").is_ok());
     }
 }
