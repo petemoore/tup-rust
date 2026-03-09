@@ -95,6 +95,9 @@ enum Commands {
         /// Node name to look for
         name: String,
     },
+    /// Display database configuration
+    #[command(name = "dbconfig")]
+    DbConfig,
     /// Check if any nodes have pending flags
     #[command(name = "flags_exists")]
     FlagsExists,
@@ -185,6 +188,7 @@ fn main() {
         Some(Commands::Scan) => cmd_scan(),
         Some(Commands::Touch { files }) => cmd_touch(files),
         Some(Commands::NodeExists { dir, name }) => cmd_node_exists(&dir, &name),
+        Some(Commands::DbConfig) => cmd_dbconfig(),
         Some(Commands::FlagsExists) => cmd_flags_exists(),
         Some(Commands::CreateFlagsExists) => cmd_create_flags_exists(),
         Some(Commands::NormalExists {
@@ -1813,6 +1817,21 @@ fn cmd_node_exists(dir: &str, name: &str) -> anyhow::Result<()> {
             process::exit(1);
         }
     }
+}
+
+fn cmd_dbconfig() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
+
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+
+    // Match C tup's dbconfig output format
+    let db_version = db.config_get_string("db_version", "0")?;
+    let parser_version = db.config_get_string("parser_version", "0")?;
+    println!("db_version: '{db_version}'");
+    println!("parser_version: '{parser_version}'");
+    Ok(())
 }
 
 fn cmd_flags_exists() -> anyhow::Result<()> {
