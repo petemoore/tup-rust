@@ -200,25 +200,15 @@ impl Graph {
         // Check for circular dependency
         if let Some(dest_node) = self.nodes.get(&dest) {
             if dest_node.state == NodeState::Processing {
-                return Err(CircularDependencyError {
-                    src,
-                    dest,
-                    style,
-                });
+                return Err(CircularDependencyError { src, dest, style });
             }
         }
 
         // Add outgoing edge
-        self.edges_out
-            .entry(src)
-            .or_default()
-            .push((dest, style));
+        self.edges_out.entry(src).or_default().push((dest, style));
 
         // Add incoming edge
-        self.edges_in
-            .entry(dest)
-            .or_default()
-            .push((src, style));
+        self.edges_in.entry(dest).or_default().push((src, style));
 
         Ok(())
     }
@@ -346,7 +336,9 @@ impl Graph {
     /// Corresponds to `trim_graph()` in C.
     pub fn trim(&mut self) {
         loop {
-            let to_remove: Vec<TupId> = self.nodes.keys()
+            let to_remove: Vec<TupId> = self
+                .nodes
+                .keys()
                 .filter(|&&id| id != self.root)
                 .filter(|&&id| {
                     let has_in = self.edges_in.get(&id).is_some_and(|e| !e.is_empty());
@@ -410,7 +402,9 @@ impl Graph {
         marked.insert(self.root);
 
         // Remove unmarked nodes
-        let to_remove: Vec<TupId> = self.nodes.keys()
+        let to_remove: Vec<TupId> = self
+            .nodes
+            .keys()
             .filter(|id| !marked.contains(id))
             .copied()
             .collect();
@@ -425,7 +419,8 @@ impl Graph {
 
     /// Get all nodes that have no dependencies (leaf inputs).
     pub fn leaf_nodes(&self) -> Vec<TupId> {
-        self.nodes.keys()
+        self.nodes
+            .keys()
             .filter(|&&id| id != self.root)
             .filter(|&&id| self.incoming_edges(id).is_empty())
             .copied()
@@ -434,12 +429,14 @@ impl Graph {
 
     /// Get all nodes ready to execute (all dependencies finished).
     pub fn ready_nodes(&self) -> Vec<TupId> {
-        self.nodes.iter()
+        self.nodes
+            .iter()
             .filter(|(&id, node)| {
                 id != self.root
                     && node.state == NodeState::Initialized
                     && self.incoming_edges(id).iter().all(|&(dep, _)| {
-                        self.nodes.get(&dep)
+                        self.nodes
+                            .get(&dep)
                             .map(|n| n.state == NodeState::Finished)
                             .unwrap_or(true)
                     })
@@ -525,7 +522,8 @@ impl Graph {
         }
 
         // Start with nodes that have no incoming edges
-        let mut queue: VecDeque<TupId> = in_degree.iter()
+        let mut queue: VecDeque<TupId> = in_degree
+            .iter()
             .filter(|(_, &deg)| deg == 0)
             .map(|(&id, _)| id)
             .collect();
@@ -581,7 +579,9 @@ impl Graph {
         // Trim leaves — remaining nodes are in cycles
         trimmed.trim();
 
-        trimmed.nodes.keys()
+        trimmed
+            .nodes
+            .keys()
             .filter(|&&id| id != trimmed.root)
             .copied()
             .collect()
@@ -646,7 +646,8 @@ mod tests {
         g.create_node(TupId::new(1), NodeType::File);
         g.create_node(TupId::new(2), NodeType::Cmd);
 
-        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal).unwrap();
+        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal)
+            .unwrap();
 
         let out = g.outgoing_edges(TupId::new(1));
         assert_eq!(out.len(), 1);
@@ -678,7 +679,8 @@ mod tests {
         let mut g = Graph::new(NodeType::Cmd);
         g.create_node(TupId::new(1), NodeType::File);
         g.create_node(TupId::new(2), NodeType::Cmd);
-        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal).unwrap();
+        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal)
+            .unwrap();
 
         g.remove_node(TupId::new(1));
         assert!(!g.contains(TupId::new(1)));
@@ -691,8 +693,10 @@ mod tests {
         g.create_node(TupId::new(1), NodeType::File);
         g.create_node(TupId::new(2), NodeType::Cmd);
         g.create_node(TupId::new(3), NodeType::Generated);
-        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal).unwrap();
-        g.create_edge(TupId::new(2), TupId::new(3), LinkType::Normal).unwrap();
+        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal)
+            .unwrap();
+        g.create_edge(TupId::new(2), TupId::new(3), LinkType::Normal)
+            .unwrap();
 
         g.remove_edges(TupId::new(2));
         assert!(g.outgoing_edges(TupId::new(2)).is_empty());
@@ -762,9 +766,15 @@ mod tests {
         g.create_node(a, NodeType::Cmd);
         g.create_node(b, NodeType::Cmd);
         // Manually create cycle (bypass Processing check)
-        g.edges_out.entry(a).or_default().push((b, LinkType::Normal));
+        g.edges_out
+            .entry(a)
+            .or_default()
+            .push((b, LinkType::Normal));
         g.edges_in.entry(b).or_default().push((a, LinkType::Normal));
-        g.edges_out.entry(b).or_default().push((a, LinkType::Normal));
+        g.edges_out
+            .entry(b)
+            .or_default()
+            .push((a, LinkType::Normal));
         g.edges_in.entry(a).or_default().push((b, LinkType::Normal));
 
         assert!(g.has_cycles());
@@ -782,13 +792,22 @@ mod tests {
         g.create_node(c, NodeType::File);
 
         // Create a→b→a cycle
-        g.edges_out.entry(a).or_default().push((b, LinkType::Normal));
+        g.edges_out
+            .entry(a)
+            .or_default()
+            .push((b, LinkType::Normal));
         g.edges_in.entry(b).or_default().push((a, LinkType::Normal));
-        g.edges_out.entry(b).or_default().push((a, LinkType::Normal));
+        g.edges_out
+            .entry(b)
+            .or_default()
+            .push((a, LinkType::Normal));
         g.edges_in.entry(a).or_default().push((b, LinkType::Normal));
 
         // c is a leaf, not in cycle
-        g.edges_out.entry(c).or_default().push((a, LinkType::Normal));
+        g.edges_out
+            .entry(c)
+            .or_default()
+            .push((a, LinkType::Normal));
         g.edges_in.entry(a).or_default().push((c, LinkType::Normal));
 
         let cycle_nodes = g.find_cycle_nodes();
@@ -823,9 +842,15 @@ mod tests {
         g.create_node(b, NodeType::Cmd);
 
         // Create cycle
-        g.edges_out.entry(a).or_default().push((b, LinkType::Normal));
+        g.edges_out
+            .entry(a)
+            .or_default()
+            .push((b, LinkType::Normal));
         g.edges_in.entry(b).or_default().push((a, LinkType::Normal));
-        g.edges_out.entry(b).or_default().push((a, LinkType::Normal));
+        g.edges_out
+            .entry(b)
+            .or_default()
+            .push((a, LinkType::Normal));
         g.edges_in.entry(a).or_default().push((b, LinkType::Normal));
 
         g.trim();
@@ -859,9 +884,12 @@ mod tests {
         g.create_node(TupId::new(1), NodeType::File);
         g.create_node(TupId::new(2), NodeType::Cmd);
         g.create_node(TupId::new(3), NodeType::Generated);
-        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal).unwrap();
-        g.create_edge(TupId::new(2), TupId::new(3), LinkType::Normal).unwrap();
-        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Sticky).unwrap();
+        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal)
+            .unwrap();
+        g.create_edge(TupId::new(2), TupId::new(3), LinkType::Normal)
+            .unwrap();
+        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Sticky)
+            .unwrap();
 
         let edges = g.all_edges();
         assert_eq!(edges.len(), 3);
@@ -872,7 +900,8 @@ mod tests {
         let mut g = Graph::new(NodeType::Cmd);
         g.create_node(TupId::new(1), NodeType::File);
         g.create_node(TupId::new(2), NodeType::Cmd);
-        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal).unwrap();
+        g.create_edge(TupId::new(1), TupId::new(2), LinkType::Normal)
+            .unwrap();
 
         let dot = g.to_dot();
         assert!(dot.contains("digraph G"));

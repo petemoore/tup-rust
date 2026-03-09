@@ -35,9 +35,7 @@ impl OutputVerification {
             ));
         }
         for u in &self.unexpected {
-            lines.push(format!(
-                "Unexpected file created: {u}",
-            ));
+            lines.push(format!("Unexpected file created: {u}",));
         }
         lines
     }
@@ -67,9 +65,8 @@ pub fn verify_outputs(
 
     // Detect unexpected files (if we have a before snapshot)
     let unexpected = if let Some(before) = before_files {
-        let expected_set: BTreeSet<String> = expected_outputs.iter()
-            .map(|(p, _)| p.clone())
-            .collect();
+        let expected_set: BTreeSet<String> =
+            expected_outputs.iter().map(|(p, _)| p.clone()).collect();
 
         let mut unexpected = Vec::new();
         if let Ok(entries) = std::fs::read_dir(work_dir) {
@@ -91,7 +88,10 @@ pub fn verify_outputs(
         Vec::new()
     };
 
-    OutputVerification { missing, unexpected }
+    OutputVerification {
+        missing,
+        unexpected,
+    }
 }
 
 /// Snapshot the current files in a directory (for before/after comparison).
@@ -154,9 +154,7 @@ mod tests {
         std::fs::write(tmp.path().join("expected.o"), "").unwrap();
         std::fs::write(tmp.path().join("surprise.tmp"), "").unwrap();
 
-        let expected = vec![
-            ("expected.o".to_string(), "gcc".to_string()),
-        ];
+        let expected = vec![("expected.o".to_string(), "gcc".to_string())];
 
         let result = verify_outputs(tmp.path(), &expected, Some(&before));
         assert!(result.is_clean()); // No missing outputs

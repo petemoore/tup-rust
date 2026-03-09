@@ -1,4 +1,4 @@
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 use tup_types::{NodeType, TupId, DB_VERSION, DOT_DT, PARSER_VERSION};
 
@@ -27,12 +27,10 @@ const SCHEMA_SQL: &[&str] = &[
 
 /// The root node inserted at database creation.
 /// Node id=1, dir=0 (virtual root parent), type=DIR, mtime=-1, mtime_ns=0, srcid=-1, name="."
-const ROOT_NODE_SQL: &str =
-    "INSERT INTO node VALUES(1, 0, 2, -1, 0, -1, '.', NULL, NULL)";
+const ROOT_NODE_SQL: &str = "INSERT INTO node VALUES(1, 0, 2, -1, 0, -1, '.', NULL, NULL)";
 
 /// Initial config entry for db_version (set to 0, then updated).
-const INITIAL_CONFIG_SQL: &str =
-    "INSERT INTO config VALUES('db_version', '0')";
+const INITIAL_CONFIG_SQL: &str = "INSERT INTO config VALUES('db_version', '0')";
 
 /// Handle to the tup SQLite database.
 pub struct TupDb {
@@ -51,9 +49,8 @@ impl TupDb {
     /// `db_sync`: if false, sets PRAGMA synchronous=OFF for speed.
     pub fn create(tup_dir: &Path, db_sync: bool) -> DbResult<Self> {
         let tup_internal = tup_dir.join(".tup");
-        std::fs::create_dir_all(&tup_internal).map_err(|e| {
-            DbError::Other(format!("failed to create .tup directory: {e}"))
-        })?;
+        std::fs::create_dir_all(&tup_internal)
+            .map_err(|e| DbError::Other(format!("failed to create .tup directory: {e}")))?;
 
         let db_path = tup_internal.join("db");
         if db_path.exists() {
@@ -99,10 +96,8 @@ impl TupDb {
             });
         }
 
-        let conn = Connection::open_with_flags(
-            &db_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
-        )?;
+        let conn =
+            Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)?;
 
         let db = TupDb {
             conn,
@@ -173,9 +168,9 @@ impl TupDb {
         );
 
         match result {
-            Ok(val) => val.parse::<i32>().map_err(|e| {
-                DbError::Other(format!("invalid config value for '{key}': {e}"))
-            }),
+            Ok(val) => val
+                .parse::<i32>()
+                .map_err(|e| DbError::Other(format!("invalid config value for '{key}': {e}"))),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(default),
             Err(e) => Err(e.into()),
         }
@@ -217,11 +212,7 @@ impl TupDb {
     /// Look up a node by parent directory and name.
     ///
     /// Returns None if not found.
-    pub fn node_select(
-        &self,
-        dir: TupId,
-        name: &str,
-    ) -> DbResult<Option<NodeRow>> {
+    pub fn node_select(&self, dir: TupId, name: &str) -> DbResult<Option<NodeRow>> {
         let result = self.conn.query_row(
             "SELECT id, dir, type, mtime, mtime_ns, srcid, name, display, flags FROM node WHERE dir=?1 AND name=?2",
             params![dir.raw(), name],
@@ -252,10 +243,9 @@ impl TupDb {
 
     /// Delete a node by its tupid.
     pub fn node_delete(&self, id: TupId) -> DbResult<bool> {
-        let count = self.conn.execute(
-            "DELETE FROM node WHERE id=?1",
-            params![id.raw()],
-        )?;
+        let count = self
+            .conn
+            .execute("DELETE FROM node WHERE id=?1", params![id.raw()])?;
         Ok(count > 0)
     }
 
@@ -334,19 +324,16 @@ impl TupDb {
         link_type: tup_types::LinkType,
     ) -> DbResult<()> {
         let sql = match link_type {
-            tup_types::LinkType::Normal => {
-                "INSERT OR IGNORE INTO normal_link VALUES(?1, ?2)"
-            }
-            tup_types::LinkType::Sticky => {
-                "INSERT OR IGNORE INTO sticky_link VALUES(?1, ?2)"
-            }
+            tup_types::LinkType::Normal => "INSERT OR IGNORE INTO normal_link VALUES(?1, ?2)",
+            tup_types::LinkType::Sticky => "INSERT OR IGNORE INTO sticky_link VALUES(?1, ?2)",
             tup_types::LinkType::Group => {
                 // Group links need a cmdid, but this simple version uses 0.
                 // The full version with cmdid will come in a later PR.
                 "INSERT OR IGNORE INTO group_link VALUES(?1, ?2, 0)"
             }
         };
-        self.conn.execute(sql, params![from_id.raw(), to_id.raw()])?;
+        self.conn
+            .execute(sql, params![from_id.raw(), to_id.raw()])?;
         Ok(())
     }
 
@@ -359,7 +346,9 @@ impl TupDb {
     ) -> DbResult<bool> {
         let table = link_type.table_name();
         let sql = format!("SELECT 1 FROM {table} WHERE from_id=?1 AND to_id=?2");
-        let result = self.conn.query_row(&sql, params![from_id.raw(), to_id.raw()], |_| Ok(()));
+        let result = self
+            .conn
+            .query_row(&sql, params![from_id.raw(), to_id.raw()], |_| Ok(()));
         match result {
             Ok(()) => Ok(true),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
@@ -429,12 +418,18 @@ impl TupDb {
     /// Returns true when create_list, modify_list, config_list, variant_list,
     /// and transient_list are all empty. Used by `tup flags_exists`.
     pub fn flags_empty(&self) -> DbResult<bool> {
-        for table in &["create_list", "modify_list", "config_list", "variant_list", "transient_list"] {
-            let count: i64 = self.conn.query_row(
-                &format!("SELECT COUNT(*) FROM {table}"),
-                [],
-                |row| row.get(0),
-            )?;
+        for table in &[
+            "create_list",
+            "modify_list",
+            "config_list",
+            "variant_list",
+            "transient_list",
+        ] {
+            let count: i64 =
+                self.conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })?;
             if count > 0 {
                 return Ok(false);
             }
@@ -444,7 +439,13 @@ impl TupDb {
 
     /// Clear all flag lists (after a successful update cycle).
     pub fn flags_clear_all(&self) -> DbResult<()> {
-        for table in &["create_list", "modify_list", "config_list", "variant_list", "transient_list"] {
+        for table in &[
+            "create_list",
+            "modify_list",
+            "config_list",
+            "variant_list",
+            "transient_list",
+        ] {
             self.conn.execute(&format!("DELETE FROM {table}"), [])?;
         }
         Ok(())
@@ -491,10 +492,9 @@ impl TupDb {
 
     /// Delete a variable.
     pub fn var_delete(&self, id: TupId) -> DbResult<bool> {
-        let count = self.conn.execute(
-            "DELETE FROM var WHERE id=?1",
-            params![id.raw()],
-        )?;
+        let count = self
+            .conn
+            .execute("DELETE FROM var WHERE id=?1", params![id.raw()])?;
         Ok(count > 0)
     }
 
@@ -711,10 +711,9 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(
-            DOT_DT, "hello.c", NodeType::File,
-            1000, 0, -1, None, None,
-        ).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "hello.c", NodeType::File, 1000, 0, -1, None, None)
+            .unwrap();
 
         let node = db.node_select(DOT_DT, "hello.c").unwrap().unwrap();
         assert_eq!(node.id, id);
@@ -733,10 +732,18 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(
-            DOT_DT, "gcc -c foo.c", NodeType::Cmd,
-            -1, 0, -1, Some("CC foo.c"), Some("t"),
-        ).unwrap();
+        let id = db
+            .node_insert(
+                DOT_DT,
+                "gcc -c foo.c",
+                NodeType::Cmd,
+                -1,
+                0,
+                -1,
+                Some("CC foo.c"),
+                Some("t"),
+            )
+            .unwrap();
 
         let node = db.node_select_by_id(id).unwrap().unwrap();
         assert_eq!(node.display, Some("CC foo.c".to_string()));
@@ -750,7 +757,8 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        db.node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        db.node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
         let result = db.node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None);
         assert!(result.is_err());
 
@@ -769,7 +777,9 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(DOT_DT, "temp.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "temp.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
         assert!(db.node_select_by_id(id).unwrap().is_some());
 
         let deleted = db.node_delete(id).unwrap();
@@ -784,7 +794,9 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(DOT_DT, "ghost.c", NodeType::Ghost, -1, 0, -1, None, None).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "ghost.c", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
         db.node_set_type(id, NodeType::File).unwrap();
 
         let node = db.node_select_by_id(id).unwrap().unwrap();
@@ -798,7 +810,9 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
         db.node_set_mtime(id, 12345, 67890).unwrap();
 
         let node = db.node_select_by_id(id).unwrap().unwrap();
@@ -813,13 +827,17 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        db.node_insert(DOT_DT, "a.c", NodeType::File, 0, 0, -1, None, None).unwrap();
-        db.node_insert(DOT_DT, "b.c", NodeType::File, 0, 0, -1, None, None).unwrap();
-        db.node_insert(DOT_DT, "c.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        db.node_insert(DOT_DT, "a.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
+        db.node_insert(DOT_DT, "b.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
+        db.node_insert(DOT_DT, "c.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
 
         let children = db.node_select_dir(DOT_DT).unwrap();
         // DOT_DT has 3 files + 3 virtual dirs ($, /, ^)
-        let file_children: Vec<_> = children.iter()
+        let file_children: Vec<_> = children
+            .iter()
             .filter(|n| n.node_type == NodeType::File)
             .collect();
         assert_eq!(file_children.len(), 3);
@@ -832,8 +850,12 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let file_id = db.node_insert(DOT_DT, "input.c", NodeType::File, 0, 0, -1, None, None).unwrap();
-        let cmd_id = db.node_insert(DOT_DT, "gcc input.c", NodeType::Cmd, -1, 0, -1, None, None).unwrap();
+        let file_id = db
+            .node_insert(DOT_DT, "input.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
+        let cmd_id = db
+            .node_insert(DOT_DT, "gcc input.c", NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap();
 
         db.link_insert(file_id, cmd_id, LinkType::Normal).unwrap();
         assert!(db.link_exists(file_id, cmd_id, LinkType::Normal).unwrap());
@@ -850,8 +872,12 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let a = db.node_insert(DOT_DT, "a", NodeType::File, 0, 0, -1, None, None).unwrap();
-        let b = db.node_insert(DOT_DT, "b", NodeType::Cmd, -1, 0, -1, None, None).unwrap();
+        let a = db
+            .node_insert(DOT_DT, "a", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
+        let b = db
+            .node_insert(DOT_DT, "b", NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap();
 
         db.link_insert(a, b, LinkType::Normal).unwrap();
         db.link_insert(a, b, LinkType::Normal).unwrap(); // Should not error
@@ -864,8 +890,12 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let a = db.node_insert(DOT_DT, "a", NodeType::File, 0, 0, -1, None, None).unwrap();
-        let b = db.node_insert(DOT_DT, "b", NodeType::Cmd, -1, 0, -1, None, None).unwrap();
+        let a = db
+            .node_insert(DOT_DT, "a", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
+        let b = db
+            .node_insert(DOT_DT, "b", NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap();
         db.link_insert(a, b, LinkType::Normal).unwrap();
         db.link_insert(a, b, LinkType::Sticky).unwrap();
 
@@ -881,7 +911,9 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(DOT_DT, "dir", NodeType::Dir, 0, 0, -1, None, None).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "dir", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
 
         assert!(!db.flag_check(id, TupFlags::Create).unwrap());
         db.flag_add(id, TupFlags::Create).unwrap();
@@ -898,7 +930,9 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(DOT_DT, "dir", NodeType::Dir, 0, 0, -1, None, None).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "dir", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
         db.flag_add(id, TupFlags::Modify).unwrap();
         db.flag_add(id, TupFlags::Modify).unwrap(); // Should not error
         assert!(db.flag_check(id, TupFlags::Modify).unwrap());
@@ -911,8 +945,12 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let a = db.node_insert(DOT_DT, "a", NodeType::Dir, 0, 0, -1, None, None).unwrap();
-        let b = db.node_insert(DOT_DT, "b", NodeType::Dir, 0, 0, -1, None, None).unwrap();
+        let a = db
+            .node_insert(DOT_DT, "a", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
+        let b = db
+            .node_insert(DOT_DT, "b", NodeType::Dir, 0, 0, -1, None, None)
+            .unwrap();
 
         db.flag_add(a, TupFlags::Create).unwrap();
         db.flag_add(b, TupFlags::Create).unwrap();
@@ -930,7 +968,9 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(DOT_DT, "MY_VAR", NodeType::Var, 0, 0, -1, None, None).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "MY_VAR", NodeType::Var, 0, 0, -1, None, None)
+            .unwrap();
         db.var_set(id, "hello world").unwrap();
 
         let val = db.var_get(id).unwrap();
@@ -944,7 +984,9 @@ mod tests {
         let db = test_db();
         db.begin().unwrap();
 
-        let id = db.node_insert(DOT_DT, "MY_VAR", NodeType::Var, 0, 0, -1, None, None).unwrap();
+        let id = db
+            .node_insert(DOT_DT, "MY_VAR", NodeType::Var, 0, 0, -1, None, None)
+            .unwrap();
         db.var_set(id, "value").unwrap();
         assert!(db.var_get(id).unwrap().is_some());
 
@@ -1001,7 +1043,8 @@ mod tests {
     fn test_transaction_commit() {
         let db = test_db();
         db.begin().unwrap();
-        db.node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        db.node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
         db.commit().unwrap();
 
         // Should persist
@@ -1013,7 +1056,8 @@ mod tests {
     fn test_transaction_rollback() {
         let db = test_db();
         db.begin().unwrap();
-        db.node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None).unwrap();
+        db.node_insert(DOT_DT, "file.c", NodeType::File, 0, 0, -1, None, None)
+            .unwrap();
         db.rollback().unwrap();
 
         // Should not persist

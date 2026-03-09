@@ -80,12 +80,15 @@ impl Progress {
         if self.failed > 0 {
             format!(
                 "{} command(s) failed out of {} ({:.1}s)",
-                self.failed, self.total, elapsed.as_secs_f64()
+                self.failed,
+                self.total,
+                elapsed.as_secs_f64()
             )
         } else {
             format!(
                 "{} command(s) ran successfully ({:.1}s)",
-                self.completed, elapsed.as_secs_f64()
+                self.completed,
+                elapsed.as_secs_f64()
             )
         }
     }

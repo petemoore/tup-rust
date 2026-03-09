@@ -19,16 +19,20 @@ impl InputFile {
     /// Create an InputFile from a path string.
     pub fn new(path: &str) -> Self {
         let p = Path::new(path);
-        let base = p.file_name()
+        let base = p
+            .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
-        let base_no_ext = p.file_stem()
+        let base_no_ext = p
+            .file_stem()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
-        let ext = p.extension()
+        let ext = p
+            .extension()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
-        let dir = p.parent()
+        let dir = p
+            .parent()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
 
@@ -296,10 +300,7 @@ mod tests {
     fn test_expand_full_command() {
         let inputs = make_inputs(&["main.c"]);
         let outputs = vec!["main.o".to_string()];
-        let result = expand_percent(
-            "gcc -c %f -o %o -MD -MF %O.d",
-            &inputs, &outputs, &[], ".",
-        );
+        let result = expand_percent("gcc -c %f -o %o -MD -MF %O.d", &inputs, &outputs, &[], ".");
         assert_eq!(result, "gcc -c main.c -o main.o -MD -MF main.d");
     }
 

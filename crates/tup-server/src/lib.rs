@@ -8,7 +8,7 @@ pub mod fuse_server;
 pub mod ldpreload;
 pub mod process;
 
-pub use depfile::{FileAccess, FileAccessSummary, read_depfile, write_depfile};
+pub use depfile::{read_depfile, write_depfile, FileAccess, FileAccessSummary};
 pub use fuse_server::{check_fuse_available, FuseConfig, FuseStatus, PassthroughFuse};
 pub use ldpreload::LdPreloadLib;
 pub use process::{ProcessServer, ServerMode, ServerResult};

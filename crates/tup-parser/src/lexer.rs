@@ -121,7 +121,10 @@ impl TupfileReader {
     /// Process all parsed lines with a base directory for include resolution.
     ///
     /// `base_dir` is the directory containing the Tupfile (for include resolution).
-    pub fn evaluate_with_dir(&mut self, base_dir: Option<&std::path::Path>) -> Result<Vec<Rule>, ParseError> {
+    pub fn evaluate_with_dir(
+        &mut self,
+        base_dir: Option<&std::path::Path>,
+    ) -> Result<Vec<Rule>, ParseError> {
         self.evaluate_with_dirs(base_dir, None, None)
     }
 
@@ -276,11 +279,13 @@ impl TupfileReader {
                                     expanded_rule.line_number,
                                 ) {
                                     Ok(bang_expanded) => rules.push(bang_expanded),
-                                    Err(e) => return Err(ParseError::Syntax {
-                                        file: String::new(),
-                                        line: rule.line_number,
-                                        message: e,
-                                    }),
+                                    Err(e) => {
+                                        return Err(ParseError::Syntax {
+                                            file: String::new(),
+                                            line: rule.line_number,
+                                            message: e,
+                                        })
+                                    }
                                 }
                             } else {
                                 rules.push(expanded_rule);
@@ -314,14 +319,21 @@ impl TupfileReader {
                                             .map_err(|e| ParseError::Syntax {
                                                 file: tuprules_path.display().to_string(),
                                                 line: parsed.line_number,
-                                                message: format!("failed to read Tuprules.tup: {e}"),
+                                                message: format!(
+                                                    "failed to read Tuprules.tup: {e}"
+                                                ),
                                             })?;
                                         let tuprules_name = tuprules_path.display().to_string();
-                                        let mut sub_reader = TupfileReader::parse(&content, &tuprules_name)?;
+                                        let mut sub_reader =
+                                            TupfileReader::parse(&content, &tuprules_name)?;
                                         sub_reader.vars = self.vars.clone();
                                         sub_reader.bangs = self.bangs.clone();
                                         let tuprules_dir = tuprules_path.parent().unwrap_or(dir);
-                                        let sub_rules = sub_reader.evaluate_with_dirs(Some(tuprules_dir), Some(root), tf_dir)?;
+                                        let sub_rules = sub_reader.evaluate_with_dirs(
+                                            Some(tuprules_dir),
+                                            Some(root),
+                                            tf_dir,
+                                        )?;
                                         let saved_cwd = self.vars.get("TUP_CWD").map(String::from);
                                         self.vars = sub_reader.vars;
                                         if let Some(cwd) = saved_cwd {
@@ -338,19 +350,28 @@ impl TupfileReader {
                             if let Some(dir) = base_dir {
                                 let include_path = dir.join(self.vars.expand(path));
                                 if include_path.exists() {
-                                    let content = std::fs::read_to_string(&include_path)
-                                        .map_err(|e| ParseError::Syntax {
-                                            file: include_path.display().to_string(),
-                                            line: parsed.line_number,
-                                            message: format!("failed to read include file: {e}"),
+                                    let content =
+                                        std::fs::read_to_string(&include_path).map_err(|e| {
+                                            ParseError::Syntax {
+                                                file: include_path.display().to_string(),
+                                                line: parsed.line_number,
+                                                message: format!(
+                                                    "failed to read include file: {e}"
+                                                ),
+                                            }
                                         })?;
                                     let include_name = include_path.display().to_string();
-                                    let mut sub_reader = TupfileReader::parse(&content, &include_name)?;
+                                    let mut sub_reader =
+                                        TupfileReader::parse(&content, &include_name)?;
                                     // Share our variable and bang databases
                                     sub_reader.vars = self.vars.clone();
                                     sub_reader.bangs = self.bangs.clone();
                                     let include_dir = include_path.parent().unwrap_or(dir);
-                                    let sub_rules = sub_reader.evaluate_with_dirs(Some(include_dir), tup_root, tf_dir)?;
+                                    let sub_rules = sub_reader.evaluate_with_dirs(
+                                        Some(include_dir),
+                                        tup_root,
+                                        tf_dir,
+                                    )?;
                                     // Merge back any variable changes, but restore TUP_CWD
                                     // to this file's value (it was overwritten by the include)
                                     let saved_cwd = self.vars.get("TUP_CWD").map(String::from);
@@ -381,7 +402,10 @@ impl TupfileReader {
                                     .map_err(|e| ParseError::Syntax {
                                         file: String::new(),
                                         line: parsed.line_number,
-                                        message: format!("failed to run script '{}': {e}", expanded_script),
+                                        message: format!(
+                                            "failed to run script '{}': {e}",
+                                            expanded_script
+                                        ),
                                     })?;
 
                                 if !output.status.success() {
@@ -389,7 +413,11 @@ impl TupfileReader {
                                     return Err(ParseError::Syntax {
                                         file: String::new(),
                                         line: parsed.line_number,
-                                        message: format!("run script '{}' failed: {}", expanded_script, stderr.trim()),
+                                        message: format!(
+                                            "run script '{}' failed: {}",
+                                            expanded_script,
+                                            stderr.trim()
+                                        ),
                                     });
                                 }
 
@@ -400,7 +428,8 @@ impl TupfileReader {
                                     sub_reader.vars = self.vars.clone();
                                     sub_reader.bangs = self.bangs.clone();
                                     sub_reader.gitignore_requested = self.gitignore_requested;
-                                    let sub_rules = sub_reader.evaluate_with_dirs(base_dir, tup_root, tf_dir)?;
+                                    let sub_rules = sub_reader
+                                        .evaluate_with_dirs(base_dir, tup_root, tf_dir)?;
                                     self.vars = sub_reader.vars;
                                     self.bangs = sub_reader.bangs;
                                     self.gitignore_requested |= sub_reader.gitignore_requested;
@@ -413,7 +442,9 @@ impl TupfileReader {
                             return Err(ParseError::Syntax {
                                 file: String::new(),
                                 line: parsed.line_number,
-                                message: format!("Found 'error' command parsing Tupfile: {expanded}"),
+                                message: format!(
+                                    "Found 'error' command parsing Tupfile: {expanded}"
+                                ),
                             });
                         }
                         TupfileLine::Unknown(text) => {
@@ -659,7 +690,10 @@ fn compute_relative_path(from: &std::path::Path, to: &std::path::Path) -> String
         for c in p.components() {
             match c {
                 Component::ParentDir => {
-                    if parts.last().is_some_and(|l| matches!(l, Component::Normal(_))) {
+                    if parts
+                        .last()
+                        .is_some_and(|l| matches!(l, Component::Normal(_)))
+                    {
                         parts.pop();
                     } else {
                         parts.push(c);
@@ -678,7 +712,9 @@ fn compute_relative_path(from: &std::path::Path, to: &std::path::Path) -> String
     // Find common prefix length
     let from_parts: Vec<_> = from_norm.components().collect();
     let to_parts: Vec<_> = to_norm.components().collect();
-    let common = from_parts.iter().zip(&to_parts)
+    let common = from_parts
+        .iter()
+        .zip(&to_parts)
         .take_while(|(a, b)| a == b)
         .count();
 

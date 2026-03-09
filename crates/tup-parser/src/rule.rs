@@ -122,7 +122,11 @@ fn parse_command_section(text: &str) -> RuleCommand {
                     let d = display_part[space_pos + 1..].trim();
                     (
                         Some(potential_flags.to_string()),
-                        if d.is_empty() { None } else { Some(d.to_string()) },
+                        if d.is_empty() {
+                            None
+                        } else {
+                            Some(d.to_string())
+                        },
                     )
                 } else {
                     (None, Some(display_part.to_string()))
@@ -172,9 +176,7 @@ fn parse_output_section(text: &str) -> (Vec<String>, Vec<String>) {
 
 /// Split a string into whitespace-separated words.
 fn split_words(text: &str) -> Vec<String> {
-    text.split_whitespace()
-        .map(|s| s.to_string())
-        .collect()
+    text.split_whitespace().map(|s| s.to_string()).collect()
 }
 
 #[cfg(test)]
@@ -209,14 +211,19 @@ mod tests {
 
     #[test]
     fn test_parse_order_only_inputs() {
-        let rule = Rule::parse("main.c | config.h |> gcc -c main.c -o main.o |> main.o", 1).unwrap();
+        let rule =
+            Rule::parse("main.c | config.h |> gcc -c main.c -o main.o |> main.o", 1).unwrap();
         assert_eq!(rule.inputs, vec!["main.c"]);
         assert_eq!(rule.order_only_inputs, vec!["config.h"]);
     }
 
     #[test]
     fn test_parse_extra_outputs() {
-        let rule = Rule::parse("foo.c |> gcc -c %f -o %o -MD -MF %o.d |> foo.o | foo.o.d", 1).unwrap();
+        let rule = Rule::parse(
+            "foo.c |> gcc -c %f -o %o -MD -MF %o.d |> foo.o | foo.o.d",
+            1,
+        )
+        .unwrap();
         assert_eq!(rule.outputs, vec!["foo.o"]);
         assert_eq!(rule.extra_outputs, vec!["foo.o.d"]);
     }

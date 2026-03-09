@@ -66,7 +66,15 @@ impl TupDb {
         flags: Option<&str>,
     ) -> DbResult<TupId> {
         let result = self.create_node_with_display(
-            cache, dir, cmd, NodeType::Cmd, -1, -1, 0, display, flags,
+            cache,
+            dir,
+            cmd,
+            NodeType::Cmd,
+            -1,
+            -1,
+            0,
+            display,
+            flags,
         )?;
         Ok(result.id())
     }
@@ -91,7 +99,9 @@ impl TupDb {
         mtime: i64,
         mtime_ns: i64,
     ) -> DbResult<CreateResult> {
-        self.create_node_with_display(cache, dir, name, node_type, srcid, mtime, mtime_ns, None, None)
+        self.create_node_with_display(
+            cache, dir, name, node_type, srcid, mtime, mtime_ns, None, None,
+        )
     }
 
     /// Create a node with display and flags, handling ghost upgrades.
@@ -114,7 +124,8 @@ impl TupDb {
         match existing {
             None => {
                 // No existing node — create new
-                let id = self.node_insert(dir, name, node_type, mtime, mtime_ns, srcid, display, flags)?;
+                let id =
+                    self.node_insert(dir, name, node_type, mtime, mtime_ns, srcid, display, flags)?;
 
                 // Add to cache
                 let row = self.node_select_by_id(id)?.unwrap();
@@ -199,11 +210,7 @@ impl TupDb {
     /// 1. Remove from all flag lists
     /// 2. Delete all links
     /// 3. Delete the node itself
-    pub fn delete_name_file(
-        &self,
-        cache: &mut EntryCache,
-        id: TupId,
-    ) -> DbResult<()> {
+    pub fn delete_name_file(&self, cache: &mut EntryCache, id: TupId) -> DbResult<()> {
         // Remove from all flag lists
         self.flag_remove(id, TupFlags::Config)?;
         self.flag_remove(id, TupFlags::Create)?;
@@ -255,11 +262,7 @@ impl TupDb {
     ///
     /// Corresponds to `make_dirs_normal()` in C.
     /// Walks up the parent chain converting any GeneratedDir to Dir.
-    fn make_dirs_normal(
-        &self,
-        cache: &mut EntryCache,
-        dir: TupId,
-    ) -> DbResult<()> {
+    fn make_dirs_normal(&self, cache: &mut EntryCache, dir: TupId) -> DbResult<()> {
         let mut current = dir;
 
         while let Some(entry) = cache.find(current) {
@@ -324,12 +327,7 @@ impl TupDb {
     /// Simplified version of `tup_file_del()` in C.
     /// If the file isn't in the database, that's OK (may have been
     /// created and deleted before the monitor could track it).
-    pub fn file_del(
-        &self,
-        cache: &mut EntryCache,
-        dir: TupId,
-        name: &str,
-    ) -> DbResult<bool> {
+    pub fn file_del(&self, cache: &mut EntryCache, dir: TupId, name: &str) -> DbResult<bool> {
         let existing = self.node_select(dir, name)?;
 
         match existing {
@@ -384,7 +382,9 @@ mod tests {
         let (db, mut cache) = setup();
         db.begin().unwrap();
 
-        let result = db.create_name_file(&mut cache, DOT_DT, "hello.c", 1000, 500).unwrap();
+        let result = db
+            .create_name_file(&mut cache, DOT_DT, "hello.c", 1000, 500)
+            .unwrap();
         let id = result.id();
 
         // Verify in database
@@ -410,12 +410,16 @@ mod tests {
         db.begin().unwrap();
 
         // Create a ghost first
-        let ghost_id = db.node_insert(DOT_DT, "phantom.c", NodeType::Ghost, -1, 0, -1, None, None).unwrap();
+        let ghost_id = db
+            .node_insert(DOT_DT, "phantom.c", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
         let row = db.node_select_by_id(ghost_id).unwrap().unwrap();
         cache.add(TupEntry::from_node_row(&row));
 
         // Now create_name_file should upgrade the ghost
-        let result = db.create_name_file(&mut cache, DOT_DT, "phantom.c", 2000, 0).unwrap();
+        let result = db
+            .create_name_file(&mut cache, DOT_DT, "phantom.c", 2000, 0)
+            .unwrap();
         assert!(matches!(result, CreateResult::Existing(_)));
         assert_eq!(result.id(), ghost_id);
 
@@ -434,10 +438,15 @@ mod tests {
         let (db, mut cache) = setup();
         db.begin().unwrap();
 
-        let id = db.create_command_file(
-            &mut cache, DOT_DT, "gcc -c foo.c -o foo.o",
-            Some("CC foo.c"), Some("j"),
-        ).unwrap();
+        let id = db
+            .create_command_file(
+                &mut cache,
+                DOT_DT,
+                "gcc -c foo.c -o foo.o",
+                Some("CC foo.c"),
+                Some("j"),
+            )
+            .unwrap();
 
         let node = db.node_select_by_id(id).unwrap().unwrap();
         assert_eq!(node.node_type, NodeType::Cmd);
@@ -455,8 +464,12 @@ mod tests {
         let (db, mut cache) = setup();
         db.begin().unwrap();
 
-        let r1 = db.create_node(&mut cache, DOT_DT, "file.c", NodeType::File, -1, 100, 0).unwrap();
-        let r2 = db.create_node(&mut cache, DOT_DT, "file.c", NodeType::File, -1, 200, 0).unwrap();
+        let r1 = db
+            .create_node(&mut cache, DOT_DT, "file.c", NodeType::File, -1, 100, 0)
+            .unwrap();
+        let r2 = db
+            .create_node(&mut cache, DOT_DT, "file.c", NodeType::File, -1, 200, 0)
+            .unwrap();
 
         assert_eq!(r1.id(), r2.id());
         assert!(matches!(r1, CreateResult::Created(_)));
@@ -470,7 +483,8 @@ mod tests {
         let (db, mut cache) = setup();
         db.begin().unwrap();
 
-        db.create_node(&mut cache, DOT_DT, "thing", NodeType::File, -1, 0, 0).unwrap();
+        db.create_node(&mut cache, DOT_DT, "thing", NodeType::File, -1, 0, 0)
+            .unwrap();
         let result = db.create_node(&mut cache, DOT_DT, "thing", NodeType::Dir, -1, 0, 0);
         assert!(result.is_err());
 
@@ -482,7 +496,9 @@ mod tests {
         let (db, mut cache) = setup();
         db.begin().unwrap();
 
-        let result = db.create_node(&mut cache, DOT_DT, "subdir", NodeType::Dir, -1, 0, 0).unwrap();
+        let result = db
+            .create_node(&mut cache, DOT_DT, "subdir", NodeType::Dir, -1, 0, 0)
+            .unwrap();
         assert!(db.flag_check(result.id(), TupFlags::Create).unwrap());
 
         db.commit().unwrap();
@@ -494,9 +510,15 @@ mod tests {
         db.begin().unwrap();
 
         // Create a file with links and flags
-        let file_id = db.create_name_file(&mut cache, DOT_DT, "test.c", 0, 0).unwrap().id();
-        let cmd_id = db.create_command_file(&mut cache, DOT_DT, "gcc test.c", None, None).unwrap();
-        db.link_insert(file_id, cmd_id, tup_types::LinkType::Normal).unwrap();
+        let file_id = db
+            .create_name_file(&mut cache, DOT_DT, "test.c", 0, 0)
+            .unwrap()
+            .id();
+        let cmd_id = db
+            .create_command_file(&mut cache, DOT_DT, "gcc test.c", None, None)
+            .unwrap();
+        db.link_insert(file_id, cmd_id, tup_types::LinkType::Normal)
+            .unwrap();
         db.flag_add(file_id, TupFlags::Modify).unwrap();
 
         // Delete the file
@@ -506,7 +528,9 @@ mod tests {
         assert!(db.node_select_by_id(file_id).unwrap().is_none());
 
         // Verify links are gone
-        assert!(!db.link_exists(file_id, cmd_id, tup_types::LinkType::Normal).unwrap());
+        assert!(!db
+            .link_exists(file_id, cmd_id, tup_types::LinkType::Normal)
+            .unwrap());
 
         // Verify flags are gone
         assert!(!db.flag_check(file_id, TupFlags::Modify).unwrap());
@@ -569,7 +593,9 @@ mod tests {
         db.begin().unwrap();
 
         // Create a ghost
-        let ghost_id = db.node_insert(DOT_DT, "ghost.c", NodeType::Ghost, -1, 0, -1, None, None).unwrap();
+        let ghost_id = db
+            .node_insert(DOT_DT, "ghost.c", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
         let row = db.node_select_by_id(ghost_id).unwrap().unwrap();
         cache.add(TupEntry::from_node_row(&row));
 
@@ -589,7 +615,8 @@ mod tests {
         let (db, mut cache) = setup();
         db.begin().unwrap();
 
-        db.create_name_file(&mut cache, DOT_DT, "delete_me.c", 0, 0).unwrap();
+        db.create_name_file(&mut cache, DOT_DT, "delete_me.c", 0, 0)
+            .unwrap();
         let deleted = db.file_del(&mut cache, DOT_DT, "delete_me.c").unwrap();
         assert!(deleted);
 
@@ -614,7 +641,9 @@ mod tests {
         let (db, mut cache) = setup();
         db.begin().unwrap();
 
-        let ghost_id = db.node_insert(DOT_DT, "ghost.c", NodeType::Ghost, -1, 0, -1, None, None).unwrap();
+        let ghost_id = db
+            .node_insert(DOT_DT, "ghost.c", NodeType::Ghost, -1, 0, -1, None, None)
+            .unwrap();
         let row = db.node_select_by_id(ghost_id).unwrap().unwrap();
         cache.add(TupEntry::from_node_row(&row));
 
@@ -633,12 +662,24 @@ mod tests {
         db.begin().unwrap();
 
         // Create a GeneratedDir
-        let gendir_id = db.node_insert(DOT_DT, "gendir", NodeType::GeneratedDir, -1, 0, -1, None, None).unwrap();
+        let gendir_id = db
+            .node_insert(
+                DOT_DT,
+                "gendir",
+                NodeType::GeneratedDir,
+                -1,
+                0,
+                -1,
+                None,
+                None,
+            )
+            .unwrap();
         let row = db.node_select_by_id(gendir_id).unwrap().unwrap();
         cache.add(TupEntry::from_node_row(&row));
 
         // Create a file inside it — should convert parent to Dir
-        db.create_name_file(&mut cache, gendir_id, "output.o", 0, 0).unwrap();
+        db.create_name_file(&mut cache, gendir_id, "output.o", 0, 0)
+            .unwrap();
 
         let node = db.node_select_by_id(gendir_id).unwrap().unwrap();
         assert_eq!(node.node_type, NodeType::Dir);

@@ -28,8 +28,11 @@ impl TupTestEnv {
             .output()
             .expect("failed to run tup init");
 
-        assert!(output.status.success(), "tup init failed: {}",
-            String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "tup init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         TupTestEnv { dir, tup_bin }
     }
@@ -114,8 +117,7 @@ impl TupTestEnv {
     /// Read a file's contents.
     pub fn read_file(&self, path: &str) -> String {
         let full = self.dir.path().join(path);
-        std::fs::read_to_string(&full)
-            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
+        std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
     }
 }
 
@@ -133,33 +135,44 @@ pub struct TupResult {
 impl TupResult {
     /// Assert the command succeeded.
     pub fn assert_success(&self) {
-        assert!(self.success, "tup command failed:\nstdout: {}\nstderr: {}",
-            self.stdout, self.stderr);
+        assert!(
+            self.success,
+            "tup command failed:\nstdout: {}\nstderr: {}",
+            self.stdout, self.stderr
+        );
     }
 
     /// Assert the command failed.
     pub fn assert_failure(&self) {
-        assert!(!self.success, "expected tup command to fail but it succeeded:\nstdout: {}",
-            self.stdout);
+        assert!(
+            !self.success,
+            "expected tup command to fail but it succeeded:\nstdout: {}",
+            self.stdout
+        );
     }
 
     /// Assert stdout contains a string.
     pub fn assert_stdout_contains(&self, s: &str) {
-        assert!(self.stdout.contains(s),
-            "expected stdout to contain '{s}'\nstdout: {}", self.stdout);
+        assert!(
+            self.stdout.contains(s),
+            "expected stdout to contain '{s}'\nstdout: {}",
+            self.stdout
+        );
     }
 
     /// Assert stderr contains a string.
     pub fn assert_stderr_contains(&self, s: &str) {
-        assert!(self.stderr.contains(s),
-            "expected stderr to contain '{s}'\nstderr: {}", self.stderr);
+        assert!(
+            self.stderr.contains(s),
+            "expected stderr to contain '{s}'\nstderr: {}",
+            self.stderr
+        );
     }
 }
 
 /// Find a binary built by cargo.
 fn cargo_bin(name: &str) -> PathBuf {
-    let mut path = std::env::current_exe()
-        .expect("failed to get current exe path");
+    let mut path = std::env::current_exe().expect("failed to get current exe path");
     // Navigate from test binary to target/debug/
     path.pop(); // remove test binary name
     if path.ends_with("deps") {

@@ -52,7 +52,14 @@ pub fn store_rules(
     let mut stored = Vec::new();
 
     for rule in rules {
-        let RuleToStore { command, inputs, order_only_inputs: _, outputs, display, flags } = rule;
+        let RuleToStore {
+            command,
+            inputs,
+            order_only_inputs: _,
+            outputs,
+            display,
+            flags,
+        } = rule;
         // In C tup, the command name IS the full command string.
         // UNIQUE(dir, name) deduplicates same command in same directory.
         let cmd_name = command_node_name(command);
@@ -93,7 +100,9 @@ pub fn store_rules(
                     dir_id,
                     &cmd_name,
                     NodeType::Cmd,
-                    -1, 0, -1,
+                    -1,
+                    0,
+                    -1,
                     display.as_deref(),
                     flags.as_deref(),
                 )?;
@@ -153,8 +162,11 @@ pub fn store_rules(
                         dir_id,
                         output_name,
                         NodeType::Generated,
-                        -1, 0, cmd_id.raw(),
-                        None, None,
+                        -1,
+                        0,
+                        cmd_id.raw(),
+                        None,
+                        None,
                     )?
                 }
             };
@@ -236,9 +248,16 @@ mod tests {
 
         // Create an input file first
         db.node_insert(
-            tup_types::DOT_DT, "main.c", NodeType::File,
-            1000, 0, -1, None, None,
-        ).unwrap();
+            tup_types::DOT_DT,
+            "main.c",
+            NodeType::File,
+            1000,
+            0,
+            -1,
+            None,
+            None,
+        )
+        .unwrap();
 
         let rules = vec![RuleToStore {
             command: "gcc -c main.c -o main.o".to_string(),
@@ -261,15 +280,23 @@ mod tests {
         assert!(db.flag_check(stored[0].cmd_id, TupFlags::Modify).unwrap());
 
         // Output should exist as Generated
-        let output = db.node_select(tup_types::DOT_DT, "main.o").unwrap().unwrap();
+        let output = db
+            .node_select(tup_types::DOT_DT, "main.o")
+            .unwrap()
+            .unwrap();
         assert_eq!(output.node_type, NodeType::Generated);
 
         // Input links should be STICKY (C tup uses sticky for declared inputs)
-        assert!(db.link_exists(
-            db.node_select(tup_types::DOT_DT, "main.c").unwrap().unwrap().id,
-            stored[0].cmd_id,
-            LinkType::Sticky,
-        ).unwrap());
+        assert!(db
+            .link_exists(
+                db.node_select(tup_types::DOT_DT, "main.c")
+                    .unwrap()
+                    .unwrap()
+                    .id,
+                stored[0].cmd_id,
+                LinkType::Sticky,
+            )
+            .unwrap());
 
         db.commit().unwrap();
     }
@@ -339,8 +366,22 @@ mod tests {
         db.begin().unwrap();
 
         let rules = vec![
-            RuleToStore { command: "cmd1".to_string(), inputs: vec![], order_only_inputs: vec![], outputs: vec![], display: None, flags: None },
-            RuleToStore { command: "cmd2".to_string(), inputs: vec![], order_only_inputs: vec![], outputs: vec![], display: None, flags: None },
+            RuleToStore {
+                command: "cmd1".to_string(),
+                inputs: vec![],
+                order_only_inputs: vec![],
+                outputs: vec![],
+                display: None,
+                flags: None,
+            },
+            RuleToStore {
+                command: "cmd2".to_string(),
+                inputs: vec![],
+                order_only_inputs: vec![],
+                outputs: vec![],
+                display: None,
+                flags: None,
+            },
         ];
         store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
 
@@ -356,7 +397,12 @@ mod tests {
         db.begin().unwrap();
 
         let rules = vec![RuleToStore {
-            command: "test cmd".to_string(), inputs: vec![], order_only_inputs: vec![], outputs: vec![], display: None, flags: None,
+            command: "test cmd".to_string(),
+            inputs: vec![],
+            order_only_inputs: vec![],
+            outputs: vec![],
+            display: None,
+            flags: None,
         }];
         let stored = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
 

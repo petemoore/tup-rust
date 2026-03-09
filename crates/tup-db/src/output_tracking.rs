@@ -57,9 +57,14 @@ pub fn track_outputs(
                 None => {
                     // Output node doesn't exist yet — create it
                     db.node_insert(
-                        dir_id, output_name, NodeType::Generated,
-                        mtime, mtime_ns, cmd_id.raw(),
-                        None, None,
+                        dir_id,
+                        output_name,
+                        NodeType::Generated,
+                        mtime,
+                        mtime_ns,
+                        cmd_id.raw(),
+                        None,
+                        None,
                     )?;
                     result.updated += 1;
                 }
@@ -104,15 +109,12 @@ mod tests {
         let db = TupDb::open(tmp.path(), false).unwrap();
         db.begin().unwrap();
 
-        let cmd_id = db.node_insert(
-            DOT_DT, "gcc -c foo.c", NodeType::Cmd, -1, 0, -1, None, None,
-        ).unwrap();
+        let cmd_id = db
+            .node_insert(DOT_DT, "gcc -c foo.c", NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap();
 
-        let result = track_outputs(
-            &db, cmd_id, DOT_DT,
-            &["output.o".to_string()],
-            tmp.path(),
-        ).unwrap();
+        let result =
+            track_outputs(&db, cmd_id, DOT_DT, &["output.o".to_string()], tmp.path()).unwrap();
 
         assert_eq!(result.updated, 1);
         assert!(result.missing.is_empty());
@@ -133,15 +135,12 @@ mod tests {
         let db = TupDb::open(tmp.path(), false).unwrap();
         db.begin().unwrap();
 
-        let cmd_id = db.node_insert(
-            DOT_DT, "gcc -c foo.c", NodeType::Cmd, -1, 0, -1, None, None,
-        ).unwrap();
+        let cmd_id = db
+            .node_insert(DOT_DT, "gcc -c foo.c", NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap();
 
-        let result = track_outputs(
-            &db, cmd_id, DOT_DT,
-            &["missing.o".to_string()],
-            tmp.path(),
-        ).unwrap();
+        let result =
+            track_outputs(&db, cmd_id, DOT_DT, &["missing.o".to_string()], tmp.path()).unwrap();
 
         assert_eq!(result.updated, 0);
         assert_eq!(result.missing, vec!["missing.o"]);
@@ -159,21 +158,26 @@ mod tests {
 
         // Create output node with old mtime
         db.node_insert(
-            DOT_DT, "result.o", NodeType::Generated, 100, 0, -1, None, None,
-        ).unwrap();
+            DOT_DT,
+            "result.o",
+            NodeType::Generated,
+            100,
+            0,
+            -1,
+            None,
+            None,
+        )
+        .unwrap();
 
         // Write the actual file
         std::fs::write(tmp.path().join("result.o"), "new content").unwrap();
 
-        let cmd_id = db.node_insert(
-            DOT_DT, "gcc", NodeType::Cmd, -1, 0, -1, None, None,
-        ).unwrap();
+        let cmd_id = db
+            .node_insert(DOT_DT, "gcc", NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap();
 
-        let result = track_outputs(
-            &db, cmd_id, DOT_DT,
-            &["result.o".to_string()],
-            tmp.path(),
-        ).unwrap();
+        let result =
+            track_outputs(&db, cmd_id, DOT_DT, &["result.o".to_string()], tmp.path()).unwrap();
 
         assert_eq!(result.updated, 1);
 
@@ -192,9 +196,9 @@ mod tests {
         let db = TupDb::open(tmp.path(), false).unwrap();
         db.begin().unwrap();
 
-        let cmd_id = db.node_insert(
-            DOT_DT, "echo hi", NodeType::Cmd, -1, 0, -1, None, None,
-        ).unwrap();
+        let cmd_id = db
+            .node_insert(DOT_DT, "echo hi", NodeType::Cmd, -1, 0, -1, None, None)
+            .unwrap();
 
         track_outputs(&db, cmd_id, DOT_DT, &[], tmp.path()).unwrap();
 

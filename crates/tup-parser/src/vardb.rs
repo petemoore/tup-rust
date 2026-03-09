@@ -157,7 +157,10 @@ mod tests {
         let mut vdb = ParseVarDb::new();
         vdb.set("CC", "gcc");
         vdb.set("CFLAGS", "-Wall -O2");
-        assert_eq!(vdb.expand("$(CC) $(CFLAGS) -c foo.c"), "gcc -Wall -O2 -c foo.c");
+        assert_eq!(
+            vdb.expand("$(CC) $(CFLAGS) -c foo.c"),
+            "gcc -Wall -O2 -c foo.c"
+        );
     }
 
     #[test]

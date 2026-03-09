@@ -70,7 +70,6 @@ enum Commands {
     Variant,
 
     // -- Testing/debugging commands used by C test suite --
-
     /// Register files with the database
     Touch {
         /// File paths to register
@@ -128,10 +127,16 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Commands::Init { directory, no_sync, force }) => {
-            cmd_init(directory, no_sync, force)
-        }
-        Some(Commands::Upd { keep_going, jobs, no_scan }) => cmd_upd(keep_going, jobs, no_scan),
+        Some(Commands::Init {
+            directory,
+            no_sync,
+            force,
+        }) => cmd_init(directory, no_sync, force),
+        Some(Commands::Upd {
+            keep_going,
+            jobs,
+            no_scan,
+        }) => cmd_upd(keep_going, jobs, no_scan),
         None => cmd_upd(false, None, false),
         Some(Commands::Parse) => cmd_parse(),
         Some(Commands::Version) => {
@@ -142,17 +147,26 @@ fn main() {
             cmd_options(jobs);
             Ok(())
         }
-        Some(Commands::Graph { directory: _, dirs: _ }) => cmd_graph(),
+        Some(Commands::Graph {
+            directory: _,
+            dirs: _,
+        }) => cmd_graph(),
         Some(Commands::Scan) => cmd_scan(),
         Some(Commands::Touch { files }) => cmd_touch(files),
         Some(Commands::NodeExists { dir, name }) => cmd_node_exists(&dir, &name),
         Some(Commands::FlagsExists) => cmd_flags_exists(),
-        Some(Commands::NormalExists { dir1, name1, dir2, name2 }) => {
-            cmd_link_exists(&dir1, &name1, &dir2, &name2, tup_types::LinkType::Normal)
-        }
-        Some(Commands::StickyExists { dir1, name1, dir2, name2 }) => {
-            cmd_link_exists(&dir1, &name1, &dir2, &name2, tup_types::LinkType::Sticky)
-        }
+        Some(Commands::NormalExists {
+            dir1,
+            name1,
+            dir2,
+            name2,
+        }) => cmd_link_exists(&dir1, &name1, &dir2, &name2, tup_types::LinkType::Normal),
+        Some(Commands::StickyExists {
+            dir1,
+            name1,
+            dir2,
+            name2,
+        }) => cmd_link_exists(&dir1, &name1, &dir2, &name2, tup_types::LinkType::Sticky),
         Some(Commands::Server) => {
             cmd_server();
             Ok(())
@@ -201,11 +215,17 @@ fn cmd_init(directory: Option<PathBuf>, no_sync: bool, force: bool) -> anyhow::R
 
     match tup_platform::init::init_command(&dir, db_sync, force) {
         Ok(()) => {
-            println!(".tup repository initialized: {}", dir.join(".tup/db").display());
+            println!(
+                ".tup repository initialized: {}",
+                dir.join(".tup/db").display()
+            );
             Ok(())
         }
         Err(tup_platform::init::InitError::AlreadyInitialized(path)) => {
-            eprintln!("tup warning: database already exists in directory: {}", path.display());
+            eprintln!(
+                "tup warning: database already exists in directory: {}",
+                path.display()
+            );
             process::exit(1);
         }
         Err(e) => Err(e.into()),
@@ -226,7 +246,10 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     if !no_scan {
         let sync_result = tup_db::sync_filesystem(&db, &mut cache, &tup_root)?;
 
-        if sync_result.files_added > 0 || sync_result.files_modified > 0 || sync_result.files_deleted > 0 {
+        if sync_result.files_added > 0
+            || sync_result.files_modified > 0
+            || sync_result.files_deleted > 0
+        {
             eprintln!(
                 "[ tup ] Scan: {} new, {} modified, {} deleted",
                 sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
@@ -239,8 +262,8 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     write_vardict(&tup_root, &config);
 
     // Phase 2: Parse Tupfiles and store commands in database
-    let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let tupfiles =
+        tup_platform::scanner::find_tupfiles(&tup_root).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Track directories with .gitignore enabled and their outputs
     let mut gitignore_dirs: std::collections::HashMap<PathBuf, Vec<String>> =
@@ -256,12 +279,14 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
             let filename = tupfile_rel.to_string_lossy();
 
-            let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
+            let parse_result =
+                parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
             let rules = parse_result.rules;
             let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
 
             if parse_result.gitignore {
-                let outputs: Vec<String> = expanded.iter()
+                let outputs: Vec<String> = expanded
+                    .iter()
                     .flat_map(|r| r.outputs.iter().cloned())
                     .collect();
                 gitignore_dirs.insert(tupfile_dir.to_path_buf(), outputs);
@@ -272,16 +297,17 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             let dir_id = resolve_dir_id(&db, dir_rel)?;
 
             // Convert expanded rules to RuleToStore
-            let rules_to_store: Vec<tup_db::RuleToStore> = expanded.iter().map(|r| {
-                tup_db::RuleToStore {
+            let rules_to_store: Vec<tup_db::RuleToStore> = expanded
+                .iter()
+                .map(|r| tup_db::RuleToStore {
                     command: r.command.command.clone(),
                     inputs: r.inputs.clone(),
                     order_only_inputs: r.order_only_inputs.clone(),
                     outputs: r.outputs.clone(),
                     display: r.command.display.clone(),
                     flags: r.command.flags.clone(),
-                }
-            }).collect();
+                })
+                .collect();
 
             let stored = tup_db::store_rules(&db, &mut cache, dir_id, &rules_to_store)?;
             total_stored += stored.len();
@@ -290,8 +316,11 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         db.commit()?;
 
         if total_stored > 0 {
-            eprintln!("[ tup ] Stored {} command(s) from {} Tupfile(s).",
-                total_stored, tupfiles.len());
+            eprintln!(
+                "[ tup ] Stored {} command(s) from {} Tupfile(s).",
+                total_stored,
+                tupfiles.len()
+            );
         }
     }
 
@@ -333,7 +362,10 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             let dir_id = row.dir;
             let display = row.display.clone();
             let cmd_name = row.name.clone();
-            dir_commands.entry(dir_id).or_default().push((*cmd_id, cmd_name, display));
+            dir_commands
+                .entry(dir_id)
+                .or_default()
+                .push((*cmd_id, cmd_name, display));
         }
     }
 
@@ -343,8 +375,9 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         let tupfile_path = tup_root.join(tupfile_rel);
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
-        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
-            let rules = parse_result.rules;
+        let parse_result =
+            parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
+        let rules = parse_result.rules;
         let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
         for rule in expanded {
             all_rules.push((tupfile_dir.to_path_buf(), rule));
@@ -361,9 +394,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         if current_dir.as_ref() != Some(&dir) {
             if !dir_rules.is_empty() {
                 let work_dir = current_dir.as_ref().unwrap();
-                let (run, failed) = execute_dir_rules(
-                    work_dir, &dir_rules, keep_going, num_jobs,
-                )?;
+                let (run, failed) = execute_dir_rules(work_dir, &dir_rules, keep_going, num_jobs)?;
                 total_run += run;
                 total_failed += failed;
                 dir_rules.clear();
@@ -375,9 +406,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
 
     if !dir_rules.is_empty() {
         if let Some(ref work_dir) = current_dir {
-            let (run, failed) = execute_dir_rules(
-                work_dir, &dir_rules, keep_going, num_jobs,
-            )?;
+            let (run, failed) = execute_dir_rules(work_dir, &dir_rules, keep_going, num_jobs)?;
             total_run += run;
             total_failed += failed;
         }
@@ -394,18 +423,26 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
 
             if let Ok(dir_id) = resolve_dir_id(&db, dir_rel) {
                 let filename = tupfile_rel.to_string_lossy();
-                if let Ok(pr) = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config) {
+                if let Ok(pr) =
+                    parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)
+                {
                     let expanded = expand_rules_for_dir(&pr.rules, tupfile_dir).unwrap_or_default();
                     for rule in &expanded {
                         // Find the CMD node for this rule
                         if let Ok(Some(cmd_row)) = db.node_select(dir_id, &rule.command.command) {
                             if cmd_row.node_type == tup_types::NodeType::Cmd {
                                 let track_result = tup_db::track_outputs(
-                                    &db, cmd_row.id, dir_id,
-                                    &rule.outputs, tupfile_dir,
+                                    &db,
+                                    cmd_row.id,
+                                    dir_id,
+                                    &rule.outputs,
+                                    tupfile_dir,
                                 )?;
                                 for missing in &track_result.missing {
-                                    eprintln!("tup warning: expected output '{}' was not created", missing);
+                                    eprintln!(
+                                        "tup warning: expected output '{}' was not created",
+                                        missing
+                                    );
                                 }
                             }
                         }
@@ -467,7 +504,10 @@ fn generate_gitignore_files(
         lines.dedup();
         let content = lines.join("\n") + "\n";
         if let Err(e) = std::fs::write(&gitignore_path, content) {
-            eprintln!("tup warning: failed to write {}: {e}", gitignore_path.display());
+            eprintln!(
+                "tup warning: failed to write {}: {e}",
+                gitignore_path.display()
+            );
         }
     }
 }
@@ -510,7 +550,12 @@ fn resolve_dir_id(db: &tup_db::TupDb, rel_path: &Path) -> anyhow::Result<TupId> 
         let name = component.as_os_str().to_string_lossy();
         match db.node_select(current, &name)? {
             Some(row) => current = row.id,
-            None => return Err(anyhow::anyhow!("directory not found in DB: {}", rel_path.display())),
+            None => {
+                return Err(anyhow::anyhow!(
+                    "directory not found in DB: {}",
+                    rel_path.display()
+                ))
+            }
         }
     }
 
@@ -529,10 +574,7 @@ fn ensure_dir_nodes(db: &tup_db::TupDb, dir_path: &Path) -> anyhow::Result<TupId
         match db.node_select(current, &name)? {
             Some(row) => current = row.id,
             None => {
-                let id = db.node_insert(
-                    current, &name, NodeType::Dir,
-                    -1, 0, -1, None, None,
-                )?;
+                let id = db.node_insert(current, &name, NodeType::Dir, -1, 0, -1, None, None)?;
                 current = id;
             }
         }
@@ -548,7 +590,10 @@ fn normalize_path(path: &Path) -> PathBuf {
         match component {
             std::path::Component::ParentDir => {
                 // Only pop if we have a normal component to go back from
-                if components.last().is_some_and(|c| matches!(c, std::path::Component::Normal(_))) {
+                if components
+                    .last()
+                    .is_some_and(|c| matches!(c, std::path::Component::Normal(_)))
+                {
                     components.pop();
                 } else {
                     components.push(component);
@@ -578,16 +623,19 @@ fn resolve_to_tup_relative(cwd: &Path, tup_root: &Path, path: &str) -> anyhow::R
 
     // On macOS, /tmp is a symlink to /private/tmp. Try canonicalizing
     // both paths to resolve symlinks before comparing.
-    if let (Ok(canon_path), Ok(canon_root)) = (
-        try_canonicalize(&normalized),
-        try_canonicalize(tup_root),
-    ) {
+    if let (Ok(canon_path), Ok(canon_root)) =
+        (try_canonicalize(&normalized), try_canonicalize(tup_root))
+    {
         if let Ok(rel) = canon_path.strip_prefix(&canon_root) {
             return Ok(rel.to_path_buf());
         }
     }
 
-    Err(anyhow::anyhow!("path '{}' is outside tup root '{}'", path, tup_root.display()))
+    Err(anyhow::anyhow!(
+        "path '{}' is outside tup root '{}'",
+        path,
+        tup_root.display()
+    ))
 }
 
 /// Try to canonicalize a path, falling back to the original if it doesn't exist.
@@ -602,7 +650,10 @@ fn try_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
             return Ok(canon_parent.join(name));
         }
     }
-    Err(std::io::Error::new(std::io::ErrorKind::NotFound, "cannot canonicalize"))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "cannot canonicalize",
+    ))
 }
 
 fn execute_dir_rules(
@@ -620,7 +671,8 @@ fn execute_dir_rules(
         updater.execute_expanded_rules_parallel(rules, num_jobs)
     } else {
         updater.execute_expanded_rules(rules)
-    }.map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Check for missing outputs
     let missing = updater.verify_outputs(&results);
@@ -645,7 +697,10 @@ fn cmd_parse() -> anyhow::Result<()> {
     let mut cache = tup_db::EntryCache::new();
     let sync_result = tup_db::sync_filesystem(&db, &mut cache, &tup_root)?;
 
-    if sync_result.files_added > 0 || sync_result.files_modified > 0 || sync_result.files_deleted > 0 {
+    if sync_result.files_added > 0
+        || sync_result.files_modified > 0
+        || sync_result.files_deleted > 0
+    {
         eprintln!(
             "[ tup ] Scan: {} new, {} modified, {} deleted",
             sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
@@ -653,8 +708,8 @@ fn cmd_parse() -> anyhow::Result<()> {
     }
 
     // Phase 2: Parse Tupfiles and store commands in database
-    let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let tupfiles =
+        tup_platform::scanner::find_tupfiles(&tup_root).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if tupfiles.is_empty() {
         println!("No Tupfiles found.");
@@ -669,25 +724,26 @@ fn cmd_parse() -> anyhow::Result<()> {
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
 
-        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
-            let rules = parse_result.rules;
+        let parse_result =
+            parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
+        let rules = parse_result.rules;
         let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
 
         // Find the dir_id for this directory
         let dir_rel = tupfile_dir.strip_prefix(&tup_root).unwrap_or(Path::new(""));
-        let dir_id = resolve_dir_id(&db, dir_rel)
-            .or_else(|_| ensure_dir_nodes(&db, dir_rel))?;
+        let dir_id = resolve_dir_id(&db, dir_rel).or_else(|_| ensure_dir_nodes(&db, dir_rel))?;
 
-        let rules_to_store: Vec<tup_db::RuleToStore> = expanded.iter().map(|r| {
-            tup_db::RuleToStore {
+        let rules_to_store: Vec<tup_db::RuleToStore> = expanded
+            .iter()
+            .map(|r| tup_db::RuleToStore {
                 command: r.command.command.clone(),
                 inputs: r.inputs.clone(),
                 order_only_inputs: r.order_only_inputs.clone(),
                 outputs: r.outputs.clone(),
                 display: r.command.display.clone(),
                 flags: r.command.flags.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         let stored = tup_db::store_rules(&db, &mut cache, dir_id, &rules_to_store)?;
         total_stored += stored.len();
@@ -698,8 +754,11 @@ fn cmd_parse() -> anyhow::Result<()> {
     db.commit()?;
 
     if total_stored > 0 {
-        eprintln!("[ tup ] Stored {} command(s) from {} Tupfile(s).",
-            total_stored, tupfiles.len());
+        eprintln!(
+            "[ tup ] Stored {} command(s) from {} Tupfile(s).",
+            total_stored,
+            tupfiles.len()
+        );
     }
 
     Ok(())
@@ -730,20 +789,22 @@ fn cmd_graph() -> anyhow::Result<()> {
 
     let config = load_config_vars(&tup_root);
 
-    let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let tupfiles =
+        tup_platform::scanner::find_tupfiles(&tup_root).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let mut all_rules = Vec::new();
     for tupfile_rel in &tupfiles {
         let tupfile_path = tup_root.join(tupfile_rel);
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
-        let dir_rel = tupfile_dir.strip_prefix(&tup_root)
+        let dir_rel = tupfile_dir
+            .strip_prefix(&tup_root)
             .unwrap_or(Path::new(""))
             .to_string_lossy()
             .to_string();
 
         let filename = tupfile_rel.to_string_lossy();
-        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
+        let parse_result =
+            parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
         let rules = parse_result.rules;
 
         for rule in rules {
@@ -777,7 +838,8 @@ fn expand_rules_for_dir(
     let mut expanded = Vec::new();
     // Track declared outputs from prior rules for glob resolution
     let mut declared_outputs: Vec<String> = Vec::new();
-    let dir_name = work_dir.file_name()
+    let dir_name = work_dir
+        .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
 
@@ -790,9 +852,7 @@ fn expand_rules_for_dir(
         }
 
         // Expand input globs against filesystem + declared outputs
-        let matched_inputs = expand_globs_with_declared(
-            &rule.inputs, work_dir, &declared_outputs,
-        )?;
+        let matched_inputs = expand_globs_with_declared(&rule.inputs, work_dir, &declared_outputs)?;
 
         // Check for missing explicit inputs (non-glob, non-declared)
         // Matches C tup parser.c:2746-2757: "Explicitly named file not found"
@@ -850,7 +910,9 @@ fn expand_rules_for_dir(
                 let input = tup_parser::InputFile::new(input_path);
 
                 // Expand output patterns for this input
-                let outputs: Vec<String> = rule.outputs.iter()
+                let outputs: Vec<String> = rule
+                    .outputs
+                    .iter()
                     .map(|pat| tup_parser::expand_output_pattern(pat, &input))
                     .collect();
 
@@ -866,7 +928,11 @@ fn expand_rules_for_dir(
                 // Expand % in display string if present
                 let display = rule.command.display.as_ref().map(|d| {
                     tup_parser::expand_percent(
-                        d, std::slice::from_ref(&input), &outputs, &rule.order_only_inputs, &dir_name,
+                        d,
+                        std::slice::from_ref(&input),
+                        &outputs,
+                        &rule.order_only_inputs,
+                        &dir_name,
                     )
                 });
 
@@ -890,13 +956,15 @@ fn expand_rules_for_dir(
             }
         } else {
             // Non-foreach: expand globs and % substitutions
-            let inputs: Vec<tup_parser::InputFile> = matched_inputs.iter()
+            let inputs: Vec<tup_parser::InputFile> = matched_inputs
+                .iter()
                 .map(|p| tup_parser::InputFile::new(p))
                 .collect();
 
             // Expand output patterns with % substitutions
             let outputs: Vec<String> = if let Some(first_input) = inputs.first() {
-                rule.outputs.iter()
+                rule.outputs
+                    .iter()
                     .map(|pat| {
                         if pat.contains('%') {
                             tup_parser::expand_output_pattern(pat, first_input)
@@ -918,9 +986,7 @@ fn expand_rules_for_dir(
             );
 
             let display = rule.command.display.as_ref().map(|d| {
-                tup_parser::expand_percent(
-                    d, &inputs, &outputs, &rule.order_only_inputs, &dir_name,
-                )
+                tup_parser::expand_percent(d, &inputs, &outputs, &rule.order_only_inputs, &dir_name)
             });
 
             // Track these outputs for later rules
@@ -959,7 +1025,8 @@ fn expand_rules_for_dir(
 
     // Check for duplicate outputs across different rules
     // C tup: "Unable to create output file because it is already owned by command"
-    let mut seen_outputs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut seen_outputs: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for rule in &expanded {
         for output in &rule.outputs {
             if let Some(prev_cmd) = seen_outputs.get(output) {
@@ -1075,12 +1142,16 @@ fn simple_glob_recursive(pattern: &[char], pi: usize, text: &[char], ti: usize) 
                 return false;
             }
             '?' => {
-                if ti >= text.len() { return false; }
+                if ti >= text.len() {
+                    return false;
+                }
                 pi += 1;
                 ti += 1;
             }
             c => {
-                if ti >= text.len() || text[ti] != c { return false; }
+                if ti >= text.len() || text[ti] != c {
+                    return false;
+                }
                 pi += 1;
                 ti += 1;
             }
@@ -1145,7 +1216,10 @@ fn parse_tupfile_any(
     if filename.ends_with(".lua") {
         let rules = tup_parser::parse_lua_tupfile(&content, filename, tupfile_dir)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(ParseResult { rules, gitignore: false })
+        Ok(ParseResult {
+            rules,
+            gitignore: false,
+        })
     } else {
         let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
         // Load config variables for @(VAR) expansion
@@ -1220,7 +1294,8 @@ fn cmd_touch(files: Vec<String>) -> anyhow::Result<()> {
 /// Create or update a node in the database for the given path.
 fn touch_path(db: &tup_db::TupDb, tup_root: &Path, rel_path: &Path) -> anyhow::Result<()> {
     let parent = rel_path.parent().unwrap_or(Path::new(""));
-    let name = rel_path.file_name()
+    let name = rel_path
+        .file_name()
         .ok_or_else(|| anyhow::anyhow!("no file name in path: {}", rel_path.display()))?
         .to_string_lossy();
 
@@ -1314,9 +1389,11 @@ fn cmd_link_exists(
     let dir1_id = resolve_dir_id(&db, Path::new(dir1))?;
     let dir2_id = resolve_dir_id(&db, Path::new(dir2))?;
 
-    let node1 = db.node_select(dir1_id, name1)?
+    let node1 = db
+        .node_select(dir1_id, name1)?
         .ok_or_else(|| anyhow::anyhow!("node '{name1}' not found in dir '{dir1}'"))?;
-    let node2 = db.node_select(dir2_id, name2)?
+    let node2 = db
+        .node_select(dir2_id, name2)?
         .ok_or_else(|| anyhow::anyhow!("node '{name2}' not found in dir '{dir2}'"))?;
 
     if db.link_exists(node1.id, node2.id, link_type)? {

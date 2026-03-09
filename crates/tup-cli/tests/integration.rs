@@ -53,7 +53,7 @@ fn t1002_multiple_rules() {
     env.write_file("b.txt", "bbb");
     env.write_tupfile(
         ": a.txt |> cp %f %o |> a.out\n\
-         : b.txt |> cp %f %o |> b.out\n"
+         : b.txt |> cp %f %o |> b.out\n",
     );
     let result = env.update();
     result.assert_success();
@@ -80,7 +80,7 @@ fn t2000_variables() {
     let env = TupTestEnv::new();
     env.write_tupfile(
         "MSG = hello_from_var\n\
-         : |> echo $(MSG) > %o |> output.txt\n"
+         : |> echo $(MSG) > %o |> output.txt\n",
     );
     let result = env.update();
     result.assert_success();
@@ -93,7 +93,7 @@ fn t2001_variable_append() {
     env.write_tupfile(
         "FLAGS = -Wall\n\
          FLAGS += -O2\n\
-         : |> echo $(FLAGS) > %o |> output.txt\n"
+         : |> echo $(FLAGS) > %o |> output.txt\n",
     );
     let result = env.update();
     result.assert_success();
@@ -109,7 +109,7 @@ fn t2002_ifdef_true() {
         "ENABLE = yes\n\
          ifdef ENABLE\n\
          : |> echo enabled > %o |> output.txt\n\
-         endif\n"
+         endif\n",
     );
     let result = env.update();
     result.assert_success();
@@ -122,7 +122,7 @@ fn t2003_ifdef_false() {
     env.write_tupfile(
         "ifdef MISSING\n\
          : |> echo should_not_run > %o |> output.txt\n\
-         endif\n"
+         endif\n",
     );
     let result = env.update();
     result.assert_success();
@@ -137,7 +137,7 @@ fn t2004_ifdef_else() {
          : |> echo wrong > %o |> output.txt\n\
          else\n\
          : |> echo correct > %o |> output.txt\n\
-         endif\n"
+         endif\n",
     );
     let result = env.update();
     result.assert_success();
@@ -151,7 +151,7 @@ fn t2005_ifeq() {
         "CC = gcc\n\
          ifeq ($(CC), gcc)\n\
          : |> echo is_gcc > %o |> output.txt\n\
-         endif\n"
+         endif\n",
     );
     let result = env.update();
     result.assert_success();
@@ -199,7 +199,7 @@ fn t2100_bang_macro() {
     env.write_file("input.txt", "data");
     env.write_tupfile(
         "!cp = |> cp %f %o |> %B.out\n\
-         : input.txt |> !cp |>\n"
+         : input.txt |> !cp |>\n",
     );
     let result = env.update();
     result.assert_success();
@@ -252,7 +252,7 @@ fn t4001_keep_going() {
     env.write_tupfile(
         ": |> echo first > first.txt |> first.txt\n\
          : |> false |>\n\
-         : |> echo third > third.txt |> third.txt\n"
+         : |> echo third > third.txt |> third.txt\n",
     );
     let _result = env.update_keep_going();
     // Should still create first.txt and third.txt
@@ -407,7 +407,7 @@ fn t2200_nested_variable_expansion() {
     env.write_tupfile(
         "A = hello\n\
          B = $(A) world\n\
-         : |> echo $(B) > %o |> out.txt\n"
+         : |> echo $(B) > %o |> out.txt\n",
     );
     let result = env.update();
     result.assert_success();
@@ -421,7 +421,7 @@ fn t2201_variable_in_output() {
     let env = TupTestEnv::new();
     env.write_tupfile(
         "OUT = result.txt\n\
-         : |> echo done > %o |> $(OUT)\n"
+         : |> echo done > %o |> $(OUT)\n",
     );
     let result = env.update();
     result.assert_success();
@@ -434,7 +434,7 @@ fn t2202_variable_in_input() {
     env.write_file("data.txt", "test_data");
     env.write_tupfile(
         "SRC = data.txt\n\
-         : $(SRC) |> cp %f %o |> copy.txt\n"
+         : $(SRC) |> cp %f %o |> copy.txt\n",
     );
     let result = env.update();
     result.assert_success();
@@ -451,7 +451,7 @@ fn t2203_ifdef_nested() {
          ifdef B\n\
          : |> echo both > %o |> out.txt\n\
          endif\n\
-         endif\n"
+         endif\n",
     );
     let result = env.update();
     result.assert_success();
@@ -466,7 +466,7 @@ fn t2204_ifneq() {
         "CC = clang\n\
          ifneq ($(CC), gcc)\n\
          : |> echo not_gcc > %o |> out.txt\n\
-         endif\n"
+         endif\n",
     );
     let result = env.update();
     result.assert_success();
@@ -483,7 +483,7 @@ fn t2300_comments_ignored() {
     env.write_tupfile(
         "# This is a comment\n\
          : |> echo ok > %o |> out.txt\n\
-         # Another comment\n"
+         # Another comment\n",
     );
     let result = env.update();
     result.assert_success();
@@ -496,7 +496,7 @@ fn t2301_line_continuation() {
     env.write_tupfile(
         "MSG = hello \\\n\
          world\n\
-         : |> echo $(MSG) > %o |> out.txt\n"
+         : |> echo $(MSG) > %o |> out.txt\n",
     );
     let result = env.update();
     result.assert_success();
@@ -516,7 +516,7 @@ fn t2400_bang_with_variable() {
     env.write_tupfile(
         "CMD = cp\n\
          !copy = |> $(CMD) %f %o |> %B.out\n\
-         : input.txt |> !copy |>\n"
+         : input.txt |> !copy |>\n",
     );
     let result = env.update();
     result.assert_success();
@@ -531,7 +531,7 @@ fn t2401_bang_foreach() {
     env.write_file("y.txt", "yy");
     env.write_tupfile(
         "!cp = foreach |> cp %f %o |> %B.out\n\
-         : *.txt |> !cp |>\n"
+         : *.txt |> !cp |>\n",
     );
     let result = env.update();
     result.assert_success();
@@ -638,13 +638,16 @@ fn t8001_options_command() {
 fn t9000_lua_basic_rule() {
     let env = TupTestEnv::new();
     env.write_file("input.txt", "lua_data");
-    env.write_file("Tupfile.lua", r#"
+    env.write_file(
+        "Tupfile.lua",
+        r#"
 tup.definerule{
     inputs = {"input.txt"},
     command = "cp %f %o",
     outputs = {"output.txt"},
 }
-"#);
+"#,
+    );
     let result = env.update();
     result.assert_success();
     env.check_exist("output.txt");
@@ -654,10 +657,13 @@ tup.definerule{
 #[test]
 fn t9001_lua_multiple_rules() {
     let env = TupTestEnv::new();
-    env.write_file("Tupfile.lua", r#"
+    env.write_file(
+        "Tupfile.lua",
+        r#"
 tup.definerule{inputs={}, command="echo one > one.txt", outputs={"one.txt"}}
 tup.definerule{inputs={}, command="echo two > two.txt", outputs={"two.txt"}}
-"#);
+"#,
+    );
     let result = env.update();
     result.assert_success();
     env.check_exist("one.txt");
@@ -667,14 +673,17 @@ tup.definerule{inputs={}, command="echo two > two.txt", outputs={"two.txt"}}
 #[test]
 fn t9002_lua_variables() {
     let env = TupTestEnv::new();
-    env.write_file("Tupfile.lua", r#"
+    env.write_file(
+        "Tupfile.lua",
+        r#"
 local msg = "from_lua"
 tup.definerule{
     inputs = {},
     command = "echo " .. msg .. " > output.txt",
     outputs = {"output.txt"},
 }
-"#);
+"#,
+    );
     let result = env.update();
     result.assert_success();
     assert!(env.read_file("output.txt").contains("from_lua"));
@@ -686,7 +695,9 @@ fn t9003_lua_loop() {
     env.write_file("a.txt", "a");
     env.write_file("b.txt", "b");
     env.write_file("c.txt", "c");
-    env.write_file("Tupfile.lua", r#"
+    env.write_file(
+        "Tupfile.lua",
+        r#"
 local files = {"a.txt", "b.txt", "c.txt"}
 for _, f in ipairs(files) do
     local out = f:gsub("%.txt", ".out")
@@ -696,7 +707,8 @@ for _, f in ipairs(files) do
         outputs = {out},
     }
 end
-"#);
+"#,
+    );
     let result = env.update();
     result.assert_success();
     env.check_exist("a.out");
@@ -710,7 +722,9 @@ fn t9004_lua_glob() {
     env.write_file("x.src", "xx");
     env.write_file("y.src", "yy");
     env.write_file("z.dat", "zz");
-    env.write_file("Tupfile.lua", r#"
+    env.write_file(
+        "Tupfile.lua",
+        r#"
 local srcs = tup.glob("*.src")
 for _, f in ipairs(srcs) do
     local out = f:gsub("%.src", ".dst")
@@ -720,7 +734,8 @@ for _, f in ipairs(srcs) do
         outputs = {out},
     }
 end
-"#);
+"#,
+    );
     let result = env.update();
     result.assert_success();
     env.check_exist("x.dst");
@@ -731,9 +746,12 @@ end
 #[test]
 fn t9005_lua_parse() {
     let env = TupTestEnv::new();
-    env.write_file("Tupfile.lua", r#"
+    env.write_file(
+        "Tupfile.lua",
+        r#"
 tup.definerule{inputs={}, command="echo hi", outputs={"out.txt"}}
-"#);
+"#,
+    );
     let result = env.parse();
     result.assert_success();
     result.assert_stderr_contains("Stored 1 command(s)");
@@ -750,13 +768,16 @@ fn t9100_mixed_standard_and_lua() {
     env.write_tupfile(": |> echo root > %o |> root.txt\n");
     // Subdirectory uses Lua
     env.write_file("sub/data.txt", "subdata");
-    env.write_file("sub/Tupfile.lua", r#"
+    env.write_file(
+        "sub/Tupfile.lua",
+        r#"
 tup.definerule{
     inputs = {"data.txt"},
     command = "cp data.txt output.txt",
     outputs = {"output.txt"},
 }
-"#);
+"#,
+    );
     let result = env.update();
     result.assert_success();
     env.check_exist("root.txt");
@@ -773,9 +794,7 @@ fn t9200_many_rules() {
     let mut tupfile = String::new();
     for i in 0..20 {
         env.write_file(&format!("input_{i}.txt"), &format!("data_{i}"));
-        tupfile.push_str(&format!(
-            ": input_{i}.txt |> cp %f %o |> output_{i}.txt\n"
-        ));
+        tupfile.push_str(&format!(": input_{i}.txt |> cp %f %o |> output_{i}.txt\n"));
     }
     env.write_tupfile(&tupfile);
     let result = env.update();
@@ -806,7 +825,10 @@ fn t9202_special_characters_in_output() {
 fn t9203_long_command() {
     let env = TupTestEnv::new();
     // Test with a long command line
-    let long_args: String = (0..50).map(|i| format!("-DVAR{i}={i}")).collect::<Vec<_>>().join(" ");
+    let long_args: String = (0..50)
+        .map(|i| format!("-DVAR{i}={i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     env.write_tupfile(&format!(": |> echo {long_args} > %o |> out.txt\n"));
     let result = env.update();
     result.assert_success();

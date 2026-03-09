@@ -70,8 +70,16 @@ impl ProcessServer {
     pub fn exec(&self, cmd: &str, env_vars: &[(String, String)]) -> Result<ServerResult, String> {
         let start = Instant::now();
 
-        let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
-        let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+        let shell = if cfg!(target_os = "windows") {
+            "cmd"
+        } else {
+            "sh"
+        };
+        let flag = if cfg!(target_os = "windows") {
+            "/C"
+        } else {
+            "-c"
+        };
 
         let mut command = Command::new(shell);
         command.arg(flag).arg(cmd);
@@ -112,7 +120,8 @@ impl ProcessServer {
         };
 
         // Execute
-        let output = command.output()
+        let output = command
+            .output()
             .map_err(|e| format!("failed to execute command: {e}"))?;
 
         let duration = start.elapsed();
@@ -120,8 +129,8 @@ impl ProcessServer {
         // Read depfile if it was created
         let file_accesses = if let Some(ref depfile) = depfile_path {
             if depfile.exists() {
-                let events = read_depfile(depfile)
-                    .map_err(|e| format!("failed to read depfile: {e}"))?;
+                let events =
+                    read_depfile(depfile).map_err(|e| format!("failed to read depfile: {e}"))?;
                 // Clean up depfile
                 let _ = std::fs::remove_file(depfile);
                 events
@@ -215,10 +224,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let server = ProcessServer::new(tmp.path(), ServerMode::None);
 
-        let result = server.exec(
-            "echo $MY_VAR > out.txt",
-            &[("MY_VAR".to_string(), "env_value".to_string())],
-        ).unwrap();
+        let result = server
+            .exec(
+                "echo $MY_VAR > out.txt",
+                &[("MY_VAR".to_string(), "env_value".to_string())],
+            )
+            .unwrap();
 
         assert!(result.success);
         let content = std::fs::read_to_string(tmp.path().join("out.txt")).unwrap();
@@ -240,12 +251,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let server = ProcessServer::new(tmp.path(), ServerMode::None);
 
-        let (result, warnings) = server.exec_and_verify(
-            "echo ok",
-            &["input.c".to_string()],
-            &["output.o".to_string()],
-            &[],
-        ).unwrap();
+        let (result, warnings) = server
+            .exec_and_verify(
+                "echo ok",
+                &["input.c".to_string()],
+                &["output.o".to_string()],
+                &[],
+            )
+            .unwrap();
 
         assert!(result.success);
         assert!(warnings.is_empty()); // No tracking = no warnings
