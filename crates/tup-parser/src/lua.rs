@@ -10,10 +10,15 @@ use crate::rule::{Rule, RuleCommand};
 /// - tup.getconfig(name)
 /// - tup.getcwd()
 /// - tup.glob(pattern)
+///
+/// In C tup, the Lua parser has full database access via `struct tupfile *tf`.
+/// The `db` parameter provides this access for operations like tup.nodevariable()
+/// and tup.run() that need to query the node database.
 pub fn parse_lua_tupfile(
     content: &str,
     filename: &str,
     work_dir: &Path,
+    _db: &dyn tup_types::ParserDb, // TODO: wire into tup.nodevariable(), tup.run()
 ) -> Result<Vec<Rule>, String> {
     let lua = Lua::new();
     let rules = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Rule>::new()));
@@ -537,7 +542,8 @@ tup.definerule{
 }
 "#;
         let tmp = tempfile::tempdir().unwrap();
-        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path()).unwrap();
+        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path(), &tup_types::NoopParserDb)
+            .unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].inputs, vec!["main.c"]);
         assert_eq!(rules[0].command.command, "gcc -c main.c -o main.o");
@@ -551,7 +557,8 @@ tup.definerule{inputs={"a.c"}, command="gcc -c a.c -o a.o", outputs={"a.o"}}
 tup.definerule{inputs={"b.c"}, command="gcc -c b.c -o b.o", outputs={"b.o"}}
 "#;
         let tmp = tempfile::tempdir().unwrap();
-        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path()).unwrap();
+        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path(), &tup_types::NoopParserDb)
+            .unwrap();
         assert_eq!(rules.len(), 2);
     }
 
@@ -566,7 +573,8 @@ tup.definerule{
 }
 "#;
         let tmp = tempfile::tempdir().unwrap();
-        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path()).unwrap();
+        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path(), &tup_types::NoopParserDb)
+            .unwrap();
         assert_eq!(rules.len(), 1);
         assert!(rules[0].foreach);
     }
@@ -578,7 +586,8 @@ local cwd = tup.getcwd()
 tup.definerule{inputs={}, command="echo " .. cwd, outputs={}}
 "#;
         let tmp = tempfile::tempdir().unwrap();
-        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path()).unwrap();
+        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path(), &tup_types::NoopParserDb)
+            .unwrap();
         assert_eq!(rules.len(), 1);
         assert!(rules[0].command.command.starts_with("echo "));
     }
@@ -596,7 +605,8 @@ for _, f in ipairs(srcs) do
     tup.definerule{inputs={f}, command="gcc -c " .. f, outputs={}}
 end
 "#;
-        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path()).unwrap();
+        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path(), &tup_types::NoopParserDb)
+            .unwrap();
         assert_eq!(rules.len(), 2); // x.c and y.c, not z.h
     }
 
@@ -612,7 +622,8 @@ tup.definerule{
 }
 "#;
         let tmp = tempfile::tempdir().unwrap();
-        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path()).unwrap();
+        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path(), &tup_types::NoopParserDb)
+            .unwrap();
         assert_eq!(
             rules[0].command.command,
             "gcc -Wall -O2 -c main.c -o main.o"
@@ -623,7 +634,8 @@ tup.definerule{
     fn test_lua_error() {
         let content = "this is not valid lua {{{";
         let tmp = tempfile::tempdir().unwrap();
-        let result = parse_lua_tupfile(content, "Tupfile.lua", tmp.path());
+        let result =
+            parse_lua_tupfile(content, "Tupfile.lua", tmp.path(), &tup_types::NoopParserDb);
         assert!(result.is_err());
     }
 
@@ -631,7 +643,8 @@ tup.definerule{
     fn test_lua_no_rules() {
         let content = "-- just a comment\nlocal x = 1\n";
         let tmp = tempfile::tempdir().unwrap();
-        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path()).unwrap();
+        let rules = parse_lua_tupfile(content, "Tupfile.lua", tmp.path(), &tup_types::NoopParserDb)
+            .unwrap();
         assert!(rules.is_empty());
     }
 }
