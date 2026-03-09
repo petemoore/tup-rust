@@ -398,6 +398,39 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     // Port of C tup's process_update_nodes() from updater.c:1638-1692.
     // Reads commands from the modify_list in the DB and executes them.
     // Commands are already stored with their full command strings from Phase 2.
+    //
+    // Transitive propagation: if command A is in modify_list and produces
+    // output X, and command B depends on X, then B must also be in the
+    // modify_list. C tup handles this via the graph builder; we do it here
+    // by following output→consumer chains until no new commands are added.
+    {
+        db.begin()?;
+        let mut added = true;
+        while added {
+            added = false;
+            let current_cmds = tup_db::get_modified_commands(&db)?;
+            for cmd_id in &current_cmds {
+                // Find outputs of this command (Generated nodes with matching srcid)
+                if let Ok(Some(row)) = db.node_select_by_id(*cmd_id) {
+                    let output_nodes = db.node_select_dir(row.dir)?;
+                    for output in &output_nodes {
+                        if output.node_type == tup_types::NodeType::Generated
+                            && output.srcid == cmd_id.raw()
+                        {
+                            // Flag commands that depend on this output
+                            let before = tup_db::get_modified_commands(&db)?.len();
+                            db.modify_cmds_by_input(output.id)?;
+                            let after = tup_db::get_modified_commands(&db)?.len();
+                            if after > before {
+                                added = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        db.commit()?;
+    }
     let modified_cmds = tup_db::get_modified_commands(&db)?;
 
     if modified_cmds.is_empty() {
