@@ -651,10 +651,37 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     let mut total_run = 0usize;
     let mut total_failed = 0usize;
 
+    // Job ID counter for FUSE job registration
+    let mut _next_job_id: i64 = 1;
+
     for (dir_path, rules) in &dir_rule_groups {
-        let (run, failed) = execute_dir_rules(dir_path, rules, keep_going, num_jobs)?;
+        // When FUSE is mounted, execute through the mount for dependency tracking.
+        // C: server_exec() registers job, executes in @tupjob-N dir, unregisters.
+        #[cfg(feature = "fuse")]
+        let (actual_dir, _fuse_finfo) = if let Some(ref fuse) = _fuse_mount {
+            let job_id = _next_job_id;
+            _next_job_id += 1;
+            let finfo = fuse.register_job(job_id);
+            let fuse_dir = fuse.job_path(job_id, dir_path);
+            (fuse_dir, Some((job_id, finfo)))
+        } else {
+            (dir_path.clone(), None)
+        };
+        #[cfg(not(feature = "fuse"))]
+        let actual_dir = dir_path.clone();
+
+        let (run, failed) = execute_dir_rules(&actual_dir, rules, keep_going, num_jobs)?;
         total_run += run;
         total_failed += failed;
+
+        // Unregister FUSE job after execution
+        #[cfg(feature = "fuse")]
+        if let Some((job_id, _finfo)) = _fuse_finfo {
+            if let Some(ref fuse) = _fuse_mount {
+                fuse.unregister_job(job_id);
+                // TODO: Call write_files() with finfo to record dependencies in DB
+            }
+        }
     }
 
     // FUSE unmount happens automatically when _fuse_mount drops
