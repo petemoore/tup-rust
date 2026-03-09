@@ -746,8 +746,13 @@ fn remove_stale_gitignore_files(
 
 /// Resolve a relative directory path to its TupId in the database.
 fn resolve_dir_id(db: &tup_db::TupDb, rel_path: &Path) -> anyhow::Result<TupId> {
-    if rel_path.as_os_str().is_empty() || rel_path == Path::new(".") {
+    let path_str = rel_path.to_string_lossy();
+    if path_str.is_empty() || path_str == "." {
         return Ok(DOT_DT);
+    }
+    // Handle numeric directory IDs (C tup convention: "0" = virtual root)
+    if let Ok(id) = path_str.parse::<i64>() {
+        return Ok(TupId::new(id));
     }
 
     let mut current = DOT_DT;
