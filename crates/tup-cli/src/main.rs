@@ -527,10 +527,12 @@ fn execute_dir_rules(
     let mut updater = tup_updater::Updater::new(work_dir);
     updater.set_keep_going(keep_going);
 
+    // Use pre-expanded execution since expand_rules_for_dir already
+    // handled all % substitutions. Avoids double-expansion of %%.
     let results = if num_jobs > 1 {
-        updater.execute_rules_parallel(rules, num_jobs)
+        updater.execute_expanded_rules_parallel(rules, num_jobs)
     } else {
-        updater.execute_rules(rules)
+        updater.execute_expanded_rules(rules)
     }.map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Check for missing outputs
@@ -729,10 +731,11 @@ fn expand_rules_for_dir(
 
         // Check for %f/%b/%B usage with no inputs, and %i with no order-only inputs
         // Matches C tup parser.c error messages
+        // Skip escaped %% (which produces literal %)
         if matched_inputs.is_empty() && !rule.had_inputs {
             let cmd = &rule.command.command;
             for (pat, desc) in [("%f", "%f"), ("%b", "%b"), ("%B", "%B")] {
-                if cmd.contains(pat) {
+                if has_unescaped_percent(cmd, pat) {
                     return Err(anyhow::anyhow!(
                         "tup error: {} used in rule pattern and no input files were specified",
                         desc
@@ -740,7 +743,7 @@ fn expand_rules_for_dir(
                 }
             }
         }
-        if rule.order_only_inputs.is_empty() && rule.command.command.contains("%i") {
+        if rule.order_only_inputs.is_empty() && has_unescaped_percent(&rule.command.command, "%i") {
             return Err(anyhow::anyhow!(
                 "tup error: %i used in rule pattern and no order-only input files were specified"
             ));
@@ -845,23 +848,58 @@ fn expand_rules_for_dir(
         }
     }
 
-    // Check for duplicate outputs across all expanded rules
-    // Matches C tup parser.c:3187-3191: "Unable to create output file because
-    // it is already owned by command"
+    // Check for duplicate outputs within each rule first
+    // C tup: "The output file 'X' is listed multiple times in a command"
+    for rule in &expanded {
+        let mut rule_outputs = std::collections::HashSet::new();
+        for output in &rule.outputs {
+            if !rule_outputs.insert(output.clone()) {
+                return Err(anyhow::anyhow!(
+                    "tup error: The output file '{}' is listed multiple times in a command",
+                    output,
+                ));
+            }
+        }
+    }
+
+    // Check for duplicate outputs across different rules
+    // C tup: "Unable to create output file because it is already owned by command"
     let mut seen_outputs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for rule in &expanded {
         for output in &rule.outputs {
             if let Some(prev_cmd) = seen_outputs.get(output) {
-                return Err(anyhow::anyhow!(
-                    "tup error: Unable to create output file '{}' in '{}' because it is already owned by '{}'",
-                    output, rule.command.command, prev_cmd,
-                ));
+                if prev_cmd != &rule.command.command {
+                    return Err(anyhow::anyhow!(
+                        "tup error: Unable to create output file '{}' in '{}' because it is already owned by '{}'",
+                        output, rule.command.command, prev_cmd,
+                    ));
+                }
             }
             seen_outputs.insert(output.clone(), rule.command.command.clone());
         }
     }
 
     Ok(expanded)
+}
+
+/// Check if a command string contains an unescaped percent pattern.
+/// Returns false for `%%f` (escaped percent), true for `%f`.
+fn has_unescaped_percent(cmd: &str, pattern: &str) -> bool {
+    let suffix = &pattern[1..]; // e.g., "f" from "%f"
+    let mut chars = cmd.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            if chars.peek() == Some(&'%') {
+                chars.next(); // skip escaped %%
+            } else {
+                let rest: String = chars.clone().take(suffix.len()).collect();
+                if rest == suffix {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Expand input globs against both the filesystem and declared outputs.
