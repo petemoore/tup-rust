@@ -68,7 +68,10 @@ impl BangDb {
         let input_section = parts[0].trim();
         let (foreach, input) = if input_section == "foreach" {
             (true, None)
-        } else if let Some(rest) = input_section.strip_prefix("foreach ") {
+        } else if let Some(rest) = input_section
+            .strip_prefix("foreach ")
+            .or_else(|| input_section.strip_prefix("foreach\t"))
+        {
             (
                 true,
                 if rest.trim().is_empty() {

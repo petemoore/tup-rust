@@ -47,8 +47,11 @@ impl Rule {
     pub fn parse(text: &str, line_number: usize) -> Result<Self, String> {
         let text = text.trim();
 
-        // Check for foreach
-        let (foreach, rest) = if let Some(stripped) = text.strip_prefix("foreach ") {
+        // Check for foreach (accepts space or tab as separator, matching C tup)
+        let (foreach, rest) = if let Some(stripped) = text
+            .strip_prefix("foreach ")
+            .or_else(|| text.strip_prefix("foreach\t"))
+        {
             (true, stripped.trim())
         } else {
             (false, text)
