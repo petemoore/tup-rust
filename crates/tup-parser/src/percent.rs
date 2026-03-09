@@ -180,6 +180,10 @@ pub fn expand_output_pattern(pattern: &str, input: &InputFile) -> String {
                     chars.next();
                     result.push_str(&input.dir);
                 }
+                Some('f') => {
+                    chars.next();
+                    result.push_str(&input.path);
+                }
                 Some(&c) => {
                     result.push('%');
                     result.push(c);
