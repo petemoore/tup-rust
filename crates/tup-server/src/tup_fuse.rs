@@ -326,6 +326,25 @@ impl TupFuseFs {
     }
 
     /// Create a temporary file mapping for an output.
+    /// Resolve a path that might be inside a @tupjob-N virtual dir
+    /// to the real filesystem path. Virtual @tupjob-N paths map to tup_top.
+    fn resolve_real_path(&self, virtual_path: &Path) -> PathBuf {
+        let path_str = virtual_path.to_string_lossy();
+        if let Some(idx) = path_str.find(TUP_JOB) {
+            // Find the end of @tupjob-N/ and get the rest
+            let after_prefix = &path_str[idx + TUP_JOB.len()..];
+            if let Some(slash_pos) = after_prefix.find('/') {
+                let relative = &after_prefix[slash_pos + 1..];
+                if relative.is_empty() {
+                    return self.tup_top.clone();
+                }
+                return self.tup_top.join(relative);
+            }
+            return self.tup_top.clone();
+        }
+        virtual_path.to_path_buf()
+    }
+
     /// C: add_mapping_internal()
     fn create_tmp_path(&self) -> PathBuf {
         let num = FILENUM.fetch_add(1, Ordering::SeqCst);
@@ -463,18 +482,14 @@ impl Filesystem for TupFuseFs {
             }
         }
 
-        // For paths inside @tupjob-N, resolve to the real filesystem.
-        // The parent might be a virtual job dir — resolve to tup_top.
-        let child_path = if parent_path.to_string_lossy().contains(TUP_JOB) {
-            // We're inside a @tupjob-N dir — resolve relative to tup_top
-            self.tup_top.join(name)
-        } else {
-            parent_path.join(name)
-        };
+        // For paths inside @tupjob-N, resolve to the real filesystem for stat
+        // but keep the virtual path for inode tracking (so record_access works).
+        let virtual_child = parent_path.join(name);
+        let real_child = self.resolve_real_path(&virtual_child);
 
-        match std::fs::symlink_metadata(&child_path) {
+        match std::fs::symlink_metadata(&real_child) {
             Ok(meta) => {
-                let ino = self.get_or_create_inode(&child_path);
+                let ino = self.get_or_create_inode(&virtual_child);
                 let attr = metadata_to_attr(ino, &meta);
                 reply.entry(&TTL, &attr, 0);
             }
@@ -495,7 +510,43 @@ impl Filesystem for TupFuseFs {
             }
         };
 
-        match std::fs::symlink_metadata(&path) {
+        // Check if this is the @tupjob-N directory itself (not a child within it)
+        let path_str = path.to_string_lossy();
+        let is_job_dir_itself = if let Some(idx) = path_str.find(TUP_JOB) {
+            // It's the job dir itself if there's nothing after @tupjob-N or just /
+            let after = &path_str[idx + TUP_JOB.len()..];
+            let after_num = after.find('/').map(|p| &after[p + 1..]).unwrap_or("");
+            after_num.is_empty()
+        } else {
+            false
+        };
+
+        if is_job_dir_itself {
+            // Virtual job directory — return synthetic dir stat
+            let attr = FileAttr {
+                ino,
+                size: 0,
+                blocks: 0,
+                atime: SystemTime::now(),
+                mtime: SystemTime::now(),
+                ctime: SystemTime::now(),
+                crtime: SystemTime::now(),
+                kind: FileType::Directory,
+                perm: 0o755,
+                nlink: 2,
+                uid: unsafe { libc::getuid() },
+                gid: unsafe { libc::getgid() },
+                rdev: 0,
+                blksize: 4096,
+                flags: 0,
+            };
+            reply.attr(&TTL, &attr);
+            return;
+        }
+
+        // Resolve virtual paths to real filesystem
+        let real_path = self.resolve_real_path(&path);
+        match std::fs::symlink_metadata(&real_path) {
             Ok(meta) => {
                 let attr = metadata_to_attr(ino, &meta);
                 // C: tup_fuse_handle_file(path, stripped, ACCESS_READ)
@@ -526,7 +577,14 @@ impl Filesystem for TupFuseFs {
             }
         };
 
-        let entries = match std::fs::read_dir(&dir_path) {
+        // For @tupjob-N virtual dirs, show project root contents
+        let real_dir = if dir_path.to_string_lossy().contains(TUP_JOB) {
+            self.tup_top.clone()
+        } else {
+            dir_path.clone()
+        };
+
+        let entries = match std::fs::read_dir(&real_dir) {
             Ok(rd) => rd,
             Err(_) => {
                 reply.error(libc::ENOENT);
@@ -540,6 +598,17 @@ impl Filesystem for TupFuseFs {
         if let Some(parent) = dir_path.parent() {
             let parent_ino = self.get_or_create_inode(parent);
             full_entries.push((parent_ino, FileType::Directory, "..".to_string()));
+        }
+
+        // For the FUSE root, also add @tupjob-N entries for registered jobs
+        if ino == 1 {
+            let jobs = self.jobs.read().unwrap();
+            for &job_id in jobs.keys() {
+                let job_name = format!("{TUP_JOB}{job_id}");
+                let job_path = dir_path.join(&job_name);
+                let job_ino = self.get_or_create_inode(&job_path);
+                full_entries.push((job_ino, FileType::Directory, job_name));
+            }
         }
 
         for entry in entries.flatten() {
@@ -603,7 +672,8 @@ impl Filesystem for TupFuseFs {
             }
         };
 
-        match std::fs::read(&path) {
+        let real_path = self.resolve_real_path(&path);
+        match std::fs::read(&real_path) {
             Ok(data) => {
                 let start = offset as usize;
                 let end = std::cmp::min(start + size as usize, data.len());
@@ -657,10 +727,10 @@ impl Filesystem for TupFuseFs {
             }
         };
 
-        // TODO: When wired to updater (WP6), write to mapped tmpname
-        // For now, write to the real file
+        // Resolve virtual path to real filesystem path
+        let real_path = self.resolve_real_path(&path);
         use std::io::Write;
-        match std::fs::OpenOptions::new().write(true).open(&path) {
+        match std::fs::OpenOptions::new().write(true).open(&real_path) {
             Ok(mut f) => {
                 use std::io::Seek;
                 if f.seek(std::io::SeekFrom::Start(offset as u64)).is_err() {
@@ -698,14 +768,15 @@ impl Filesystem for TupFuseFs {
         };
 
         let child_path = parent_path.join(name);
+        let real_child = self.resolve_real_path(&child_path);
 
         // Create the file (C: mknod_internal with O_CREAT | O_WRONLY | O_TRUNC)
-        match std::fs::File::create(&child_path) {
+        match std::fs::File::create(&real_child) {
             Ok(_) => {
                 let ino = self.get_or_create_inode(&child_path);
                 // Record write access (C: tup_fuse_handle_file(path, NULL, ACCESS_WRITE))
                 self.record_access(ino, tup_types::AccessType::Write);
-                match std::fs::symlink_metadata(&child_path) {
+                match std::fs::symlink_metadata(&real_child) {
                     Ok(meta) => {
                         let attr = metadata_to_attr(ino, &meta);
                         reply.created(&TTL, &attr, 0, 0, 0);
@@ -754,10 +825,11 @@ impl Filesystem for TupFuseFs {
             return;
         }
 
-        match std::fs::File::create(&child_path) {
+        let real_child = self.resolve_real_path(&child_path);
+        match std::fs::File::create(&real_child) {
             Ok(_) => {
                 let ino = self.get_or_create_inode(&child_path);
-                match std::fs::symlink_metadata(&child_path) {
+                match std::fs::symlink_metadata(&real_child) {
                     Ok(meta) => {
                         let attr = metadata_to_attr(ino, &meta);
                         reply.entry(&TTL, &attr, 0);
@@ -811,7 +883,8 @@ impl Filesystem for TupFuseFs {
         // TODO: Wire to FileInfo tmpdir_list when integrated with updater (WP6)
 
         // Create real dir for now (will be virtual when FUSE is fully wired)
-        let _ = std::fs::create_dir_all(&child_path);
+        let real_child = self.resolve_real_path(&child_path);
+        let _ = std::fs::create_dir_all(&real_child);
         let ino = self.get_or_create_inode(&child_path);
         let attr = FileAttr {
             ino,
@@ -850,7 +923,8 @@ impl Filesystem for TupFuseFs {
         let ino = self.get_or_create_inode(&child_path);
         self.record_access(ino, tup_types::AccessType::Unlink);
 
-        match std::fs::remove_file(&child_path) {
+        let real_child = self.resolve_real_path(&child_path);
+        match std::fs::remove_file(&real_child) {
             Ok(_) => reply.ok(),
             Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
         }
@@ -868,8 +942,9 @@ impl Filesystem for TupFuseFs {
         };
 
         let child_path = parent_path.join(name);
+        let real_child = self.resolve_real_path(&child_path);
 
-        match std::fs::remove_dir(&child_path) {
+        match std::fs::remove_dir(&real_child) {
             Ok(_) => reply.ok(),
             Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
         }
@@ -940,8 +1015,10 @@ impl Filesystem for TupFuseFs {
 
         let old_path = old_parent.join(name);
         let new_path = new_parent.join(newname);
+        let real_old = self.resolve_real_path(&old_path);
+        let real_new = self.resolve_real_path(&new_path);
 
-        match std::fs::rename(&old_path, &new_path) {
+        match std::fs::rename(&real_old, &real_new) {
             Ok(_) => {
                 // Update inode mapping
                 if let Some(ino) = self.path_to_inode.write().unwrap().remove(&old_path) {
