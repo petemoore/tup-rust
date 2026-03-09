@@ -22,6 +22,11 @@ pub struct Rule {
     /// Matches C tup behavior: `$(empty_var) |> cmd |>` is skipped,
     /// but `: |> cmd |>` runs.
     pub had_inputs: bool,
+    /// Snapshot of variables at the time this rule was parsed.
+    /// Used for multi-pass expansion: after %-flags are expanded,
+    /// these vars are used for the second-pass $(var) expansion.
+    /// This matches C tup's do_rule() which calls tup_printf() then eval().
+    pub vars_snapshot: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// The command portion of a rule.
@@ -75,6 +80,7 @@ impl Rule {
             extra_outputs,
             line_number,
             had_inputs,
+            vars_snapshot: None,
         })
     }
 }
