@@ -929,7 +929,7 @@ fn parse_tupfile_any(
             .map_err(|e| anyhow::anyhow!("{e}"))
     } else {
         let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
-        Ok(reader.evaluate_with_dirs(Some(tupfile_dir), Some(tup_root))?)
+        Ok(reader.evaluate_with_dirs(Some(tupfile_dir), Some(tup_root), None)?)
     }
 }
 
