@@ -289,6 +289,7 @@ impl TupfileReader {
                                     macro_name,
                                     &expanded_rule.inputs,
                                     &expanded_rule.outputs,
+                                    expanded_rule.foreach,
                                     expanded_rule.line_number,
                                 ) {
                                     Ok(bang_expanded) => rules.push(bang_expanded),
@@ -956,8 +957,8 @@ endif
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].command.command, "gcc -c %f -o %o");
         assert_eq!(rules[0].outputs, vec!["%B.o"]);
-        // foreach comes from the macro
-        assert!(!rules[0].foreach); // The rule itself isn't foreach, macro isn't either
+        // foreach from the rule propagates to the expanded macro
+        assert!(rules[0].foreach);
     }
 
     #[test]
