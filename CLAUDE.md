@@ -15,13 +15,13 @@ The original C source is at `~/git/tup/`.
 
 ## How to Work on This Project
 
-1. **Check PLAN.md** for the next `[ ]` PR to work on
+1. **Check PARITY_PLAN.md** for the current focus area
 2. **Read the relevant `C_ANALYSIS/*.md`** file for the spec
 3. **Implement in the correct crate** per ARCHITECTURE.md
 4. **Write tests** — every PR must have tests
-5. **Run `cargo build && cargo test && cargo clippy`** before creating a PR
+5. **Run `cargo build && cargo test && cargo clippy && cargo fmt --all`** before creating a PR
 6. **Create PR** on `petemoore/tup-rust` via `gh pr create`
-7. **Update PLAN.md** to mark the PR as `[x]`
+7. **Continue working autonomously** — don't stop to ask questions, make reasonable decisions and keep going. The goal is complete feature parity with the C implementation.
 
 ## Conventions
 
