@@ -293,8 +293,53 @@ pub fn parse_lua_tupfile(
     // Set tup as global
     lua.globals().set("tup", tup_table).map_err(lua_err)?;
 
+    // Register tup_append_assignment (C tup's += operator support)
+    // This function appends a value (string or table) to an existing value.
+    let append_assignment_lua = r#"
+tup_table_meta = {}
+tup_table_meta.__tostring = function(t)
+    return table.concat(t, ' ')
+end
+tup_table_meta.__concat = function(a, b)
+    if type(a) == 'table' then a = tostring(a) end
+    if type(b) == 'table' then b = tostring(b) end
+    return a .. b
+end
+
+tup_append_assignment = function(a, b)
+    local result
+    if type(a) == 'string' then
+        result = {a}
+    elseif type(a) == 'table' then
+        result = a
+    elseif type(a) == 'nil' then
+        result = {}
+    else
+        error('+= operator only works when the source is a table or string')
+    end
+    if type(b) == 'string' then
+        result[#result+1] = b
+    elseif type(b) == 'table' then
+        for _, v in ipairs(b) do
+            result[#result+1] = v
+        end
+    elseif type(b) ~= 'nil' then
+        error('+= operator only works when the value is a table or string')
+    end
+    setmetatable(result, tup_table_meta)
+    return result
+end
+"#;
+    lua.load(append_assignment_lua)
+        .set_name("builtin")
+        .exec()
+        .map_err(lua_err)?;
+
+    // Preprocess content: convert `var += value` into `var = tup_append_assignment(var, value)`
+    let processed = preprocess_lua_plus_equals(content);
+
     // Execute the Lua script
-    lua.load(content)
+    lua.load(&processed)
         .set_name(filename)
         .exec()
         .map_err(|e| format!("Lua error in {filename}: {e}"))?;
@@ -313,6 +358,40 @@ pub fn parse_lua_tupfile(
         .unwrap();
 
     Ok(result)
+}
+
+/// Preprocess Lua content to convert `var += value` into `var = tup_append_assignment(var, value)`.
+///
+/// This matches C tup's patched Lua parser which natively supports +=.
+/// We do it as a text transformation since we use unpatched mlua.
+fn preprocess_lua_plus_equals(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Match lines like `varname += value` (not inside strings or comments)
+        if !trimmed.starts_with("--") {
+            if let Some(pos) = line.find("+=") {
+                // Check this isn't inside a string (simple heuristic: no quotes before +=)
+                let before = &line[..pos];
+                let quote_count = before.chars().filter(|c| *c == '"' || *c == '\'').count();
+                if quote_count % 2 == 0 {
+                    // This is a real += operator
+                    let var_name = before.trim();
+                    let value = line[pos + 2..].trim();
+                    result.push_str(var_name);
+                    result.push_str(" = tup_append_assignment(");
+                    result.push_str(var_name);
+                    result.push_str(", ");
+                    result.push_str(value);
+                    result.push_str(")\n");
+                    continue;
+                }
+            }
+        }
+        result.push_str(line);
+        result.push('\n');
+    }
+    result
 }
 
 /// Convert a Lua table to a Vec<String>.
