@@ -265,6 +265,30 @@ pub fn parse_lua_tupfile(
         .map_err(lua_err)?;
     tup_table.set("glob", glob_fn).map_err(lua_err)?;
 
+    // tup.include(filename) — load and execute a Lua file
+    let wd_for_include = work_dir_owned.clone();
+    let include_fn = lua
+        .create_function(move |lua_ctx, filename: String| {
+            let path = wd_for_include.join(&filename);
+            let content = std::fs::read_to_string(&path).map_err(|e| {
+                mlua::Error::RuntimeError(format!("Cannot include '{}': {}", filename, e))
+            })?;
+            let processed = preprocess_lua_plus_equals(&content);
+            lua_ctx
+                .load(&processed)
+                .set_name(&filename)
+                .exec()
+                .map_err(|e| {
+                    mlua::Error::RuntimeError(format!(
+                        "Error in included file '{}': {}",
+                        filename, e
+                    ))
+                })?;
+            Ok(())
+        })
+        .map_err(lua_err)?;
+    tup_table.set("include", include_fn).map_err(lua_err)?;
+
     // tup.export(varname)
     let export_fn = lua
         .create_function(|_, _name: String| Ok(()))
@@ -290,12 +314,20 @@ pub fn parse_lua_tupfile(
         .map_err(lua_err)?;
     tup_table.set("append_table", append_fn).map_err(lua_err)?;
 
+    // tup.getrelativedir(dir) — stub for now
+    let getreldir_fn = lua
+        .create_function(|_, _dir: String| Ok("".to_string()))
+        .map_err(lua_err)?;
+    tup_table
+        .set("getrelativedir", getreldir_fn)
+        .map_err(lua_err)?;
+
     // Set tup as global
     lua.globals().set("tup", tup_table).map_err(lua_err)?;
 
     // Register tup_append_assignment (C tup's += operator support)
     // This function appends a value (string or table) to an existing value.
-    let append_assignment_lua = r#"
+    let builtin_lua = r#"
 tup_table_meta = {}
 tup_table_meta.__tostring = function(t)
     return table.concat(t, ' ')
@@ -329,8 +361,60 @@ tup_append_assignment = function(a, b)
     setmetatable(result, tup_table_meta)
     return result
 end
+
+-- Helper: convert string to table
+local function tableize(t)
+    if type(t) == 'string' then return {t} end
+    if type(t) == 'table' then return t end
+    return {}
+end
+
+-- tup.frule(arguments) — normalize and call definerule
+tup.frule = function(arguments)
+    if arguments.inputs then
+        if type(arguments.inputs) == 'table' then
+            if arguments.inputs.extra_inputs then
+                arguments.extra_inputs = tableize(arguments.inputs.extra_inputs)
+                arguments.inputs['extra_inputs'] = nil
+            end
+        end
+        arguments.inputs = tableize(arguments.inputs)
+    end
+    if arguments.outputs then
+        if type(arguments.outputs) == 'table' then
+            if arguments.outputs.extra_outputs then
+                arguments.extra_outputs = tableize(arguments.outputs.extra_outputs)
+                arguments.outputs['extra_outputs'] = nil
+            end
+        end
+        arguments.outputs = tableize(arguments.outputs)
+    end
+    return tup.definerule(arguments)
+end
+
+-- tup.rule(inputs, command, outputs) — shorthand
+tup.rule = function(a, b, c)
+    if c then
+        -- 3-arg form: inputs, command, outputs
+        local inputs = type(a) == 'string' and {a} or (a or {})
+        local outputs = type(c) == 'string' and {c} or (c or {})
+        return tup.definerule{inputs=inputs, command=b, outputs=outputs}
+    elseif b then
+        -- 2-arg form: command + outputs or inputs + command
+        if type(a) == 'table' and type(b) == 'string' then
+            return tup.definerule{inputs=a, command=b, outputs={}}
+        elseif type(a) == 'string' and type(b) == 'table' then
+            return tup.definerule{inputs={}, command=a, outputs=b}
+        elseif type(a) == 'string' and type(b) == 'string' then
+            return tup.definerule{inputs={}, command=a, outputs={b}}
+        end
+    else
+        -- 1-arg form: just command
+        return tup.definerule{inputs={}, command=a, outputs={}}
+    end
+end
 "#;
-    lua.load(append_assignment_lua)
+    lua.load(builtin_lua)
         .set_name("builtin")
         .exec()
         .map_err(lua_err)?;
