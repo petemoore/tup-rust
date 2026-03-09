@@ -42,6 +42,21 @@ impl TupDb {
         Ok(())
     }
 
+    /// Get all input node IDs that link TO a given node via normal_link.
+    ///
+    /// For CMD nodes, this returns the input files that the command depends on.
+    /// Port of C tup's normal_link reverse lookup: SELECT from_id FROM normal_link WHERE to_id=?
+    pub fn get_input_ids(&self, to_id: TupId) -> DbResult<Vec<TupId>> {
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT from_id FROM normal_link WHERE to_id=?1")?;
+        let rows = stmt.query_map(params![to_id.raw()], |row| {
+            let id: i64 = row.get(0)?;
+            Ok(TupId::new(id))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Get the single incoming normal link for a node.
     ///
     /// For output files, there should be exactly one command that produces them.
