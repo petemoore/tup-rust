@@ -141,6 +141,7 @@ impl BangDb {
         macro_name: &str,
         rule_inputs: &[String],
         rule_outputs: &[String],
+        rule_foreach: bool,
         line_number: usize,
     ) -> Result<Rule, String> {
         let mac = self
@@ -166,7 +167,7 @@ impl BangDb {
 
         let had_inputs = !inputs.is_empty();
         Ok(Rule {
-            foreach: mac.foreach,
+            foreach: rule_foreach || mac.foreach,
             inputs,
             order_only_inputs: vec![],
             command: RuleCommand {
@@ -260,7 +261,7 @@ mod tests {
         db.define("cc", "|> gcc -c %f -o %o |> %B.o").unwrap();
 
         let rule = db
-            .expand_rule("cc", &["main.c".to_string()], &[], 1)
+            .expand_rule("cc", &["main.c".to_string()], &[], false, 1)
             .unwrap();
 
         assert_eq!(rule.inputs, vec!["main.c"]);
@@ -274,7 +275,13 @@ mod tests {
         db.define("cc", "|> gcc -c %f -o %o |> %B.o").unwrap();
 
         let rule = db
-            .expand_rule("cc", &["main.c".to_string()], &["custom.o".to_string()], 1)
+            .expand_rule(
+                "cc",
+                &["main.c".to_string()],
+                &["custom.o".to_string()],
+                false,
+                1,
+            )
             .unwrap();
 
         assert_eq!(rule.outputs, vec!["custom.o"]);
@@ -285,7 +292,7 @@ mod tests {
         let mut db = BangDb::new();
         db.define("link", "*.o |> gcc %f -o %o |> myapp").unwrap();
 
-        let rule = db.expand_rule("link", &[], &[], 1).unwrap();
+        let rule = db.expand_rule("link", &[], &[], false, 1).unwrap();
         assert_eq!(rule.inputs, vec!["*.o"]);
     }
 
