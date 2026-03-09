@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(gh repo:*)",
+      "Bash(git:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo:*)",
+      "Bash(gh pr:*)",
+      "Read(//private/tmp/tup-e2e-test/**)",
+      "Bash(/Users/pmoore/git/tup-rust/target/debug/tup parse)",
+      "Bash(cat:*)",
+      "Read(//private/tmp/tup-multidir/**)",
+      "Bash(/Users/pmoore/git/tup-rust/target/debug/tup graph)",
+      "Bash(ls:*)",
+      "Bash(sed:*)",
+      "Bash(chmod +x:*)",
+      "Bash(VERBOSE=1 ./tests/compat/run_tests.sh:*)",
+      "Bash(VERBOSE=0 ./tests/compat/run_tests.sh t2000:*)",
+      "Bash(./tests/compat/run_tests.sh:*)",
+      "Bash(VERBOSE=0 ./tests/compat/run_tests.sh t2004:*)",
+      "Bash(git push:*)",
+      "Bash(cargo fmt:*)"
+    ]
+  }
+}
