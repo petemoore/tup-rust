@@ -116,27 +116,30 @@ impl TupfileReader {
     /// Process all parsed lines with a base directory for include resolution.
     ///
     /// `base_dir` is the directory containing the Tupfile (for include resolution).
-    /// `tup_root` is the tup project root (for TUP_CWD computation).
     pub fn evaluate_with_dir(&mut self, base_dir: Option<&std::path::Path>) -> Result<Vec<Rule>, ParseError> {
-        self.evaluate_with_dirs(base_dir, None)
+        self.evaluate_with_dirs(base_dir, None, None)
     }
 
     /// Process all parsed lines with base directory and tup root for TUP_CWD.
+    ///
+    /// `tupfile_dir` is the directory of the original Tupfile being parsed (stays
+    /// constant through includes). TUP_CWD is computed as the relative path from
+    /// `tupfile_dir` to `base_dir`, matching C tup behavior.
     pub fn evaluate_with_dirs(
         &mut self,
         base_dir: Option<&std::path::Path>,
         tup_root: Option<&std::path::Path>,
+        tupfile_dir: Option<&std::path::Path>,
     ) -> Result<Vec<Rule>, ParseError> {
-        // Set TUP_CWD to relative path from tup root to current directory
-        if let (Some(dir), Some(root)) = (base_dir, tup_root) {
-            if let Ok(rel) = dir.strip_prefix(root) {
-                let cwd = if rel.as_os_str().is_empty() {
-                    ".".to_string()
-                } else {
-                    rel.to_string_lossy().to_string()
-                };
-                self.vars.set("TUP_CWD", &cwd);
-            }
+        // The original Tupfile directory — defaults to base_dir for the initial call
+        let tf_dir = tupfile_dir.or(base_dir);
+
+        // Set TUP_CWD to relative path from Tupfile's directory to current file's
+        // directory. In C tup, TUP_CWD = "." for the Tupfile itself, and the
+        // relative path (e.g. "../bar") for included files.
+        if let (Some(dir), Some(origin)) = (base_dir, tf_dir) {
+            let cwd = compute_relative_path(origin, dir);
+            self.vars.set("TUP_CWD", &cwd);
         }
         let mut rules = Vec::new();
         let mut if_stack: Vec<bool> = Vec::new(); // true = active branch
@@ -271,7 +274,7 @@ impl TupfileReader {
                                         sub_reader.vars = self.vars.clone();
                                         sub_reader.bangs = self.bangs.clone();
                                         let tuprules_dir = tuprules_path.parent().unwrap_or(dir);
-                                        let sub_rules = sub_reader.evaluate_with_dirs(Some(tuprules_dir), Some(root))?;
+                                        let sub_rules = sub_reader.evaluate_with_dirs(Some(tuprules_dir), Some(root), tf_dir)?;
                                         self.vars = sub_reader.vars;
                                         self.bangs = sub_reader.bangs;
                                         rules.extend(sub_rules);
@@ -295,7 +298,7 @@ impl TupfileReader {
                                     sub_reader.vars = self.vars.clone();
                                     sub_reader.bangs = self.bangs.clone();
                                     let include_dir = include_path.parent().unwrap_or(dir);
-                                    let sub_rules = sub_reader.evaluate_with_dirs(Some(include_dir), tup_root)?;
+                                    let sub_rules = sub_reader.evaluate_with_dirs(Some(include_dir), tup_root, tf_dir)?;
                                     // Merge back any variable changes
                                     self.vars = sub_reader.vars;
                                     self.bangs = sub_reader.bangs;
@@ -505,6 +508,59 @@ fn parse_eq_args(text: &str) -> Result<(String, String), String> {
     match inner.split_once(',') {
         Some((a, b)) => Ok((a.trim().to_string(), b.trim().to_string())),
         None => Err("expected (value1, value2)".to_string()),
+    }
+}
+
+/// Compute a relative path from `from` to `to`.
+///
+/// Returns "." when both paths are the same. Otherwise returns a relative
+/// path using ".." components as needed, matching C tup's TUP_CWD behavior.
+fn compute_relative_path(from: &std::path::Path, to: &std::path::Path) -> String {
+    use std::path::Component;
+
+    // Normalize both paths to remove . and .. components
+    let normalize = |p: &std::path::Path| -> std::path::PathBuf {
+        let mut parts = Vec::new();
+        for c in p.components() {
+            match c {
+                Component::ParentDir => {
+                    if parts.last().is_some_and(|l| matches!(l, Component::Normal(_))) {
+                        parts.pop();
+                    } else {
+                        parts.push(c);
+                    }
+                }
+                Component::CurDir => {}
+                _ => parts.push(c),
+            }
+        }
+        parts.iter().collect()
+    };
+
+    let from_norm = normalize(from);
+    let to_norm = normalize(to);
+
+    // Find common prefix length
+    let from_parts: Vec<_> = from_norm.components().collect();
+    let to_parts: Vec<_> = to_norm.components().collect();
+    let common = from_parts.iter().zip(&to_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    // Build relative path: ".." for each remaining `from` component, then `to` remainder
+    let ups = from_parts.len() - common;
+    let mut result = std::path::PathBuf::new();
+    for _ in 0..ups {
+        result.push("..");
+    }
+    for part in &to_parts[common..] {
+        result.push(part.as_os_str());
+    }
+
+    if result.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        result.to_string_lossy().to_string()
     }
 }
 

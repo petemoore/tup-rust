@@ -5,6 +5,14 @@ use std::time::Instant;
 
 use tup_parser::{expand_globs, expand_output_pattern, expand_percent, InputFile, Rule};
 
+/// An expanded command ready for execution, with its inputs and outputs tracked.
+struct ExpandedCommand {
+    cmd: String,
+    display: Option<String>,
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+}
+
 /// Result of executing a single command.
 #[derive(Debug)]
 pub struct CommandResult {
@@ -267,10 +275,11 @@ impl Updater {
         missing
     }
 
-    /// Execute independent commands in parallel using a thread pool.
+    /// Execute commands in parallel with dependency-aware scheduling.
     ///
-    /// `num_jobs` controls the maximum number of concurrent commands.
-    /// Each command result is collected in completion order.
+    /// Commands are organized into waves based on producer→consumer
+    /// relationships (output of one rule used as input to another).
+    /// Commands within a wave run in parallel, waves execute sequentially.
     pub fn execute_rules_parallel(
         &mut self,
         rules: &[Rule],
@@ -283,8 +292,8 @@ impl Updater {
             return self.execute_rules(rules);
         }
 
-        // Expand all rules into individual commands first
-        let mut commands: Vec<(String, Option<String>, Vec<String>)> = Vec::new();
+        // Expand all rules into individual commands with their inputs
+        let mut commands: Vec<ExpandedCommand> = Vec::new();
 
         for rule in rules {
             let expanded_inputs = expand_globs(&rule.inputs, &self.work_dir)
@@ -300,7 +309,12 @@ impl Updater {
                         &rule.command.command, &[input], &outputs,
                         &rule.order_only_inputs, &self.dir_name(),
                     );
-                    commands.push((cmd, rule.command.display.clone(), outputs));
+                    commands.push(ExpandedCommand {
+                        cmd,
+                        display: rule.command.display.clone(),
+                        inputs: vec![input_str.clone()],
+                        outputs,
+                    });
                 }
             } else {
                 let inputs: Vec<InputFile> = expanded_inputs.iter()
@@ -319,90 +333,164 @@ impl Updater {
                     &rule.command.command, &inputs, &outputs,
                     &rule.order_only_inputs, &self.dir_name(),
                 );
-                commands.push((cmd, rule.command.display.clone(), outputs));
+                commands.push(ExpandedCommand {
+                    cmd,
+                    display: rule.command.display.clone(),
+                    inputs: expanded_inputs,
+                    outputs,
+                });
             }
         }
 
+        // Build dependency graph: for each command, find which other commands
+        // produce its inputs. A command depends on all producers of its inputs.
         let total = commands.len();
-        let results = Arc::new(Mutex::new(Vec::with_capacity(total)));
-        let work_dir = self.work_dir.clone();
-        let counter = Arc::new(Mutex::new(0usize));
 
-        std::thread::scope(|s| {
-            let mut handles = Vec::new();
-            let chunks: Vec<_> = commands.chunks(
-                commands.len().div_ceil(num_jobs)
-            ).collect();
+        // Map output name → index of command that produces it
+        let mut output_producers: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (idx, ec) in commands.iter().enumerate() {
+            for out in &ec.outputs {
+                output_producers.insert(out.clone(), idx);
+            }
+        }
 
-            for chunk in chunks {
-                let results = Arc::clone(&results);
-                let counter = Arc::clone(&counter);
-                let work_dir = work_dir.clone();
-                let chunk: Vec<_> = chunk.to_vec();
-
-                handles.push(s.spawn(move || {
-                    for (cmd, display, outputs) in chunk {
-                        let mut num = counter.lock().unwrap();
-                        *num += 1;
-                        let n = *num;
-                        drop(num);
-
-                        if let Some(ref d) = display {
-                            eprintln!(" [{n}/{total}] {d}");
-                        } else {
-                            eprintln!(" [{n}/{total}] {cmd}");
-                        }
-
-                        let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
-                        let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };
-                        let start = Instant::now();
-
-                        let output = Command::new(shell)
-                            .arg(flag).arg(&cmd)
-                            .current_dir(&work_dir)
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .output();
-
-                        let duration = start.elapsed();
-
-                        let result = match output {
-                            Ok(o) => CommandResult {
-                                command: cmd,
-                                display,
-                                success: o.status.success(),
-                                exit_code: o.status.code(),
-                                stdout: String::from_utf8_lossy(&o.stdout).to_string(),
-                                stderr: String::from_utf8_lossy(&o.stderr).to_string(),
-                                duration_ms: duration.as_millis() as u64,
-                                expected_outputs: outputs,
-                            },
-                            Err(e) => CommandResult {
-                                command: cmd,
-                                display,
-                                success: false,
-                                exit_code: None,
-                                stdout: String::new(),
-                                stderr: e.to_string(),
-                                duration_ms: duration.as_millis() as u64,
-                                expected_outputs: outputs,
-                            },
-                        };
-
-                        results.lock().unwrap().push(result);
+        // Compute dependencies for each command
+        let mut deps: Vec<Vec<usize>> = vec![Vec::new(); total];
+        for (idx, ec) in commands.iter().enumerate() {
+            for inp in &ec.inputs {
+                if let Some(&producer) = output_producers.get(inp) {
+                    if producer != idx {
+                        deps[idx].push(producer);
                     }
-                }));
+                }
+            }
+        }
+
+        // Execute in waves: each wave contains commands whose deps are all done
+        let mut done = vec![false; total];
+        let mut all_results = Vec::with_capacity(total);
+        self.total_expected = total;
+
+        while all_results.len() < total {
+            // Find ready commands (all deps satisfied)
+            let ready: Vec<usize> = (0..total)
+                .filter(|&i| !done[i] && deps[i].iter().all(|&d| done[d]))
+                .collect();
+
+            if ready.is_empty() {
+                return Err("dependency cycle detected in rules".to_string());
             }
 
-            for h in handles {
-                h.join().unwrap();
-            }
-        });
+            // Execute this wave in parallel
+            let wave_commands: Vec<(usize, &ExpandedCommand)> =
+                ready.iter().map(|&i| (i, &commands[i])).collect();
 
-        let final_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
-        self.commands_run = final_results.len();
-        self.commands_failed = final_results.iter().filter(|r| !r.success).count();
-        Ok(final_results)
+            let results = Arc::new(Mutex::new(Vec::new()));
+            let work_dir = self.work_dir.clone();
+            let counter = Arc::new(Mutex::new(self.commands_run));
+
+            std::thread::scope(|s| {
+                let mut handles = Vec::new();
+                let chunk_size = wave_commands.len().div_ceil(num_jobs);
+                let chunks: Vec<_> = wave_commands.chunks(chunk_size).collect();
+
+                for chunk in chunks {
+                    let results = Arc::clone(&results);
+                    let counter = Arc::clone(&counter);
+                    let work_dir = work_dir.clone();
+                    let chunk: Vec<_> = chunk.to_vec();
+
+                    handles.push(s.spawn(move || {
+                        for (idx, ec) in chunk {
+                            let mut num = counter.lock().unwrap();
+                            *num += 1;
+                            let n = *num;
+                            drop(num);
+
+                            if let Some(ref d) = ec.display {
+                                eprintln!(" [{n}/{total}] {d}");
+                            } else {
+                                eprintln!(" [{n}/{total}] {}", ec.cmd);
+                            }
+
+                            let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
+                            let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+                            let start = Instant::now();
+
+                            let output = Command::new(shell)
+                                .arg(flag).arg(&ec.cmd)
+                                .current_dir(&work_dir)
+                                .stdout(Stdio::piped())
+                                .stderr(Stdio::piped())
+                                .output();
+
+                            let duration = start.elapsed();
+
+                            let result = match output {
+                                Ok(o) => {
+                                    if !o.status.success() {
+                                        let stderr_text = String::from_utf8_lossy(&o.stderr);
+                                        let stdout_text = String::from_utf8_lossy(&o.stdout);
+                                        if !stderr_text.trim().is_empty() {
+                                            eprintln!("{}", stderr_text.trim());
+                                        }
+                                        if !stdout_text.trim().is_empty() {
+                                            eprintln!("{}", stdout_text.trim());
+                                        }
+                                        if let Some(code) = o.status.code() {
+                                            eprintln!(" *** Command failed with exit code {code}");
+                                        }
+                                    }
+                                    CommandResult {
+                                        command: ec.cmd.clone(),
+                                        display: ec.display.clone(),
+                                        success: o.status.success(),
+                                        exit_code: o.status.code(),
+                                        stdout: String::from_utf8_lossy(&o.stdout).to_string(),
+                                        stderr: String::from_utf8_lossy(&o.stderr).to_string(),
+                                        duration_ms: duration.as_millis() as u64,
+                                        expected_outputs: ec.outputs.clone(),
+                                    }
+                                }
+                                Err(e) => CommandResult {
+                                    command: ec.cmd.clone(),
+                                    display: ec.display.clone(),
+                                    success: false,
+                                    exit_code: None,
+                                    stdout: String::new(),
+                                    stderr: e.to_string(),
+                                    duration_ms: duration.as_millis() as u64,
+                                    expected_outputs: ec.outputs.clone(),
+                                },
+                            };
+
+                            results.lock().unwrap().push((idx, result));
+                        }
+                    }));
+                }
+
+                for h in handles {
+                    h.join().unwrap();
+                }
+            });
+
+            let wave_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+            self.commands_run += wave_results.len();
+            let wave_failed = wave_results.iter().filter(|(_,r)| !r.success).count();
+            self.commands_failed += wave_failed;
+
+            for (idx, result) in wave_results {
+                done[idx] = true;
+                all_results.push(result);
+            }
+
+            if wave_failed > 0 && !self.keep_going {
+                break;
+            }
+        }
+
+        Ok(all_results)
     }
 }
 

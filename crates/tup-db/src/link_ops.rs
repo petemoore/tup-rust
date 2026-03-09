@@ -38,6 +38,20 @@ impl TupDb {
         Ok(count > 0)
     }
 
+    /// Remove all links (both normal and sticky) involving a node.
+    ///
+    /// This deletes links where the node is either the source or destination.
+    /// Used when cleaning up stale command nodes.
+    pub fn link_delete_all(&self, id: TupId) -> DbResult<()> {
+        for table in &["normal_link", "sticky_link"] {
+            self.conn().execute(
+                &format!("DELETE FROM {table} WHERE from_id=?1 OR to_id=?1"),
+                params![id.raw()],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Get the single incoming normal link for a node.
     ///
     /// For output files, there should be exactly one command that produces them.

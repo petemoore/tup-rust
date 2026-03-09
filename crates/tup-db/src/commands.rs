@@ -170,6 +170,20 @@ pub fn store_rules(
         });
     }
 
+    // Clean up stale commands: remove CMD nodes in this directory that
+    // were not produced by the current parse. This handles the case where
+    // a Tupfile changes and old commands should be deleted.
+    let active_cmd_ids: std::collections::HashSet<TupId> =
+        stored.iter().map(|s| s.cmd_id).collect();
+    let existing_nodes = db.node_select_dir(dir_id)?;
+    for row in existing_nodes {
+        if row.node_type == NodeType::Cmd && !active_cmd_ids.contains(&row.id) {
+            // Stale command — remove its links and the node itself
+            db.link_delete_all(row.id)?;
+            db.node_delete(row.id)?;
+        }
+    }
+
     Ok(stored)
 }
 
