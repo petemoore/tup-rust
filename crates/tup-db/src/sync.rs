@@ -138,14 +138,14 @@ fn sync_dir(
                         result.files_modified += 1;
 
                         // Propagate changes to dependent commands and directories.
-                        // In C tup, set_dependent_flags() flags directories for
-                        // re-parsing via normal_link. Additionally, we need to flag
-                        // commands that use this file as an input (via sticky_link)
-                        // so they get re-executed.
+                        // Port of C tup's path.c:262 and db.c:1031-1040:
+                        // 1. Flag directories for re-parsing (set_dependent_dir_flags)
+                        // 2. Flag commands that use this file as input (modify_cmds_by_input)
+                        // 3. Flag commands via sticky links
                         db.set_dependent_flags(row.id)?;
+                        db.modify_cmds_by_input(row.id)?;
 
                         // Flag commands that have this file as a sticky input
-                        // (declared dependency from Tupfile rules)
                         let sticky_outputs = db.get_sticky_outputs(row.id)?;
                         for cmd_id in &sticky_outputs {
                             db.flag_add(*cmd_id, TupFlags::Modify)?;
@@ -191,8 +191,11 @@ fn sync_dir(
             // File/dir exists in DB but not on filesystem
             match row.node_type {
                 NodeType::File => {
-                    // File deleted from disk — remove from DB
-                    // (matches C tup's delete_file() behavior)
+                    // File deleted from disk — propagate to dependent
+                    // commands BEFORE removing from DB.
+                    // Port of C tup's delete handling (db.c:1031-1040)
+                    db.modify_cmds_by_input(row.id)?;
+                    db.set_dependent_dir_flags(row.id)?;
                     db.node_delete(row.id)?;
                     result.files_deleted += 1;
                 }
