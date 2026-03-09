@@ -18,6 +18,10 @@ struct Cli {
     /// Number of parallel jobs (shorthand for `tup upd -j N`)
     #[arg(short, long, global = true)]
     jobs: Option<usize>,
+
+    /// Skip filesystem scan (shorthand for `tup upd --no-scan`)
+    #[arg(long, global = true)]
+    no_scan: bool,
 }
 
 #[derive(Subcommand)]
@@ -94,6 +98,9 @@ enum Commands {
     /// Check if any nodes have pending flags
     #[command(name = "flags_exists")]
     FlagsExists,
+    /// Check if any nodes have create flags set
+    #[command(name = "create_flags_exists")]
+    CreateFlagsExists,
     /// Check if a normal dependency link exists
     #[command(name = "normal_exists")]
     NormalExists {
@@ -156,8 +163,12 @@ fn main() {
             keep_going,
             jobs,
             no_scan,
-        }) => cmd_upd(keep_going || cli.keep_going, jobs.or(cli.jobs), no_scan),
-        None => cmd_upd(cli.keep_going, cli.jobs, false),
+        }) => cmd_upd(
+            keep_going || cli.keep_going,
+            jobs.or(cli.jobs),
+            no_scan || cli.no_scan,
+        ),
+        None => cmd_upd(cli.keep_going, cli.jobs, cli.no_scan),
         Some(Commands::Parse) => cmd_parse(),
         Some(Commands::Version) => {
             cmd_version();
@@ -175,6 +186,7 @@ fn main() {
         Some(Commands::Touch { files }) => cmd_touch(files),
         Some(Commands::NodeExists { dir, name }) => cmd_node_exists(&dir, &name),
         Some(Commands::FlagsExists) => cmd_flags_exists(),
+        Some(Commands::CreateFlagsExists) => cmd_create_flags_exists(),
         Some(Commands::NormalExists {
             dir1,
             name1,
@@ -1757,6 +1769,23 @@ fn cmd_flags_exists() -> anyhow::Result<()> {
         Ok(())
     } else {
         // Flags exist — dirty state — exit non-zero
+        process::exit(1);
+    }
+}
+
+fn cmd_create_flags_exists() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found."))?;
+
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+
+    let create_list = db.flag_list(tup_types::TupFlags::Create)?;
+    if create_list.is_empty() {
+        // No create flags — exit 0
+        Ok(())
+    } else {
+        // Create flags exist — exit non-zero
         process::exit(1);
     }
 }
