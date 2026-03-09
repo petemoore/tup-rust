@@ -374,7 +374,11 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         }
     }
 
-    // Phase 3: Execute only modified commands
+    // Phase 3: Execute modified commands
+    //
+    // Port of C tup's process_update_nodes() from updater.c:1638-1692.
+    // Reads commands from the modify_list in the DB and executes them.
+    // Commands are already stored with their full command strings from Phase 2.
     let modified_cmds = tup_db::get_modified_commands(&db)?;
 
     if modified_cmds.is_empty() {
@@ -399,111 +403,107 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
 
     eprintln!("[ tup ] {} command(s) to execute.", modified_cmds.len());
 
-    // Look up each command and execute it
+    // Build list of commands to execute from the DB modify_list.
+    // Each command is already stored with its full command string.
+    // Group by directory for proper working directory during execution.
+    struct CmdToRun {
+        cmd_id: TupId,
+        dir_id: TupId,
+        command: String,
+        display: Option<String>,
+        outputs: Vec<String>,
+    }
+
+    let mut commands_to_run: Vec<CmdToRun> = Vec::new();
+    for cmd_id in &modified_cmds {
+        if let Some(row) = db.node_select_by_id(*cmd_id)? {
+            if row.node_type != tup_types::NodeType::Cmd {
+                continue;
+            }
+            // Get outputs for this command from the DB
+            let output_nodes = db.node_select_dir(row.dir)?;
+            let outputs: Vec<String> = output_nodes
+                .iter()
+                .filter(|n| {
+                    n.node_type == tup_types::NodeType::Generated && n.srcid == cmd_id.raw()
+                })
+                .map(|n| n.name.clone())
+                .collect();
+
+            commands_to_run.push(CmdToRun {
+                cmd_id: *cmd_id,
+                dir_id: row.dir,
+                command: row.name.clone(),
+                display: row.display.clone(),
+                outputs,
+            });
+        }
+    }
+
+    // Resolve directory paths for each command
+    let mut dir_paths: std::collections::HashMap<TupId, PathBuf> = std::collections::HashMap::new();
+    for cmd in &commands_to_run {
+        if let std::collections::hash_map::Entry::Vacant(e) = dir_paths.entry(cmd.dir_id) {
+            // Resolve dir_id to a filesystem path
+            let path = resolve_dir_path(&db, cmd.dir_id, &tup_root)?;
+            e.insert(path);
+        }
+    }
+
+    // Group commands by directory, build Rules for the executor
+    let mut dir_rule_groups: std::collections::BTreeMap<PathBuf, Vec<tup_parser::Rule>> =
+        std::collections::BTreeMap::new();
+    let mut cmd_id_map: Vec<(PathBuf, TupId)> = Vec::new();
+
+    for cmd in &commands_to_run {
+        let dir_path = dir_paths.get(&cmd.dir_id).unwrap().clone();
+        let rule = tup_parser::Rule {
+            foreach: false,
+            inputs: vec![],
+            order_only_inputs: vec![],
+            command: tup_parser::RuleCommand {
+                command: cmd.command.clone(),
+                display: cmd.display.clone(),
+                flags: None,
+            },
+            outputs: cmd.outputs.clone(),
+            extra_outputs: vec![],
+            line_number: 0,
+            had_inputs: false,
+        };
+        dir_rule_groups
+            .entry(dir_path.clone())
+            .or_default()
+            .push(rule);
+        cmd_id_map.push((dir_path, cmd.cmd_id));
+    }
+
+    // Execute commands grouped by directory
     let mut total_run = 0usize;
     let mut total_failed = 0usize;
 
-    // Group commands by directory for execution
-    let mut dir_commands: std::collections::BTreeMap<TupId, Vec<(TupId, String, Option<String>)>> =
-        std::collections::BTreeMap::new();
-
-    for cmd_id in &modified_cmds {
-        if let Some(row) = db.node_select_by_id(*cmd_id)? {
-            let dir_id = row.dir;
-            let display = row.display.clone();
-            let cmd_name = row.name.clone();
-            dir_commands
-                .entry(dir_id)
-                .or_default()
-                .push((*cmd_id, cmd_name, display));
-        }
+    for (dir_path, rules) in &dir_rule_groups {
+        let (run, failed) = execute_dir_rules(dir_path, rules, keep_going, num_jobs)?;
+        total_run += run;
+        total_failed += failed;
     }
 
-    // Re-parse and expand Tupfiles to get actual command strings for execution
-    let mut all_rules: Vec<(PathBuf, tup_parser::Rule)> = Vec::new();
-    for tupfile_rel in &tupfiles {
-        let tupfile_path = tup_root.join(tupfile_rel);
-        let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
-        let filename = tupfile_rel.to_string_lossy();
-        let parse_result =
-            parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
-        let rules = parse_result.rules;
-        let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
-        for rule in expanded {
-            all_rules.push((tupfile_dir.to_path_buf(), rule));
-        }
-    }
-
-    // Execute all rules
-    all_rules.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut current_dir: Option<PathBuf> = None;
-    let mut dir_rules: Vec<tup_parser::Rule> = Vec::new();
-
-    for (dir, rule) in all_rules {
-        if current_dir.as_ref() != Some(&dir) {
-            if !dir_rules.is_empty() {
-                let work_dir = current_dir.as_ref().unwrap();
-                let (run, failed) = execute_dir_rules(work_dir, &dir_rules, keep_going, num_jobs)?;
-                total_run += run;
-                total_failed += failed;
-                dir_rules.clear();
-            }
-            current_dir = Some(dir);
-        }
-        dir_rules.push(rule);
-    }
-
-    if !dir_rules.is_empty() {
-        if let Some(ref work_dir) = current_dir {
-            let (run, failed) = execute_dir_rules(work_dir, &dir_rules, keep_going, num_jobs)?;
-            total_run += run;
-            total_failed += failed;
-        }
-    }
-
-    // Post-execution: update output mtimes and clear modify flags
+    // Post-execution: clear modify flags and track outputs
+    // Port of C tup's update_work() post-success handling (updater.c:2170-2185)
     db.begin()?;
     if total_failed == 0 {
-        // Track output mtimes for each stored command
-        for tupfile_rel in &tupfiles {
-            let tupfile_path = tup_root.join(tupfile_rel);
-            let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
-            let dir_rel = tupfile_dir.strip_prefix(&tup_root).unwrap_or(Path::new(""));
-
-            if let Ok(dir_id) = resolve_dir_id(&db, dir_rel) {
-                let filename = tupfile_rel.to_string_lossy();
-                if let Ok(pr) =
-                    parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)
-                {
-                    let expanded = expand_rules_for_dir(&pr.rules, tupfile_dir).unwrap_or_default();
-                    for rule in &expanded {
-                        // Find the CMD node for this rule
-                        if let Ok(Some(cmd_row)) = db.node_select(dir_id, &rule.command.command) {
-                            if cmd_row.node_type == tup_types::NodeType::Cmd {
-                                let track_result = tup_db::track_outputs(
-                                    &db,
-                                    cmd_row.id,
-                                    dir_id,
-                                    &rule.outputs,
-                                    tupfile_dir,
-                                )?;
-                                for missing in &track_result.missing {
-                                    eprintln!(
-                                        "tup warning: expected output '{}' was not created",
-                                        missing
-                                    );
-                                }
-                            }
-                        }
-                    }
+        for cmd in &commands_to_run {
+            let dir_path = dir_paths.get(&cmd.dir_id).unwrap();
+            // Track output mtimes
+            if !cmd.outputs.is_empty() {
+                let track_result =
+                    tup_db::track_outputs(&db, cmd.cmd_id, cmd.dir_id, &cmd.outputs, dir_path)?;
+                for missing in &track_result.missing {
+                    eprintln!("tup warning: expected output '{}' was not created", missing);
                 }
             }
-        }
-
-        // Clear modify flags
-        for cmd_id in &modified_cmds {
-            tup_db::mark_command_done(&db, *cmd_id)?;
+            // Clear modify flag for this command (C: tup_db_unflag_modify)
+            tup_db::mark_command_done(&db, cmd.cmd_id)?;
         }
 
         // Clear all remaining flag lists (scan/parse flags)
@@ -610,6 +610,30 @@ fn resolve_dir_id(db: &tup_db::TupDb, rel_path: &Path) -> anyhow::Result<TupId> 
     }
 
     Ok(current)
+}
+
+/// Resolve a TupId back to a filesystem path relative to tup root.
+fn resolve_dir_path(db: &tup_db::TupDb, dir_id: TupId, tup_root: &Path) -> anyhow::Result<PathBuf> {
+    if dir_id == DOT_DT {
+        return Ok(tup_root.to_path_buf());
+    }
+
+    let mut parts = Vec::new();
+    let mut current = dir_id;
+    while current != DOT_DT {
+        let row = db
+            .node_select_by_id(current)?
+            .ok_or_else(|| anyhow::anyhow!("node {} not found", current.raw()))?;
+        parts.push(row.name.clone());
+        current = row.dir;
+    }
+    parts.reverse();
+
+    let mut path = tup_root.to_path_buf();
+    for part in parts {
+        path = path.join(part);
+    }
+    Ok(path)
 }
 
 /// Resolve a directory path, creating missing DIR nodes along the way.
