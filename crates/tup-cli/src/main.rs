@@ -321,19 +321,22 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     let mut gitignore_dirs: std::collections::HashMap<PathBuf, Vec<String>> =
         std::collections::HashMap::new();
 
-    if !tupfiles.is_empty() {
+    {
         db.begin()?;
 
-        let mut total_stored;
+        let mut total_stored = 0;
 
-        // Parse, store rules, and delete stale outputs
-        let parse_and_store =
-            |tupfiles: &[PathBuf],
-             db: &tup_db::TupDb,
-             cache: &mut tup_db::EntryCache,
-             tup_root: &Path,
-             config: &std::collections::BTreeMap<String, String>,
-             gitignore_dirs: &mut std::collections::HashMap<PathBuf, Vec<String>>|
+        if !tupfiles.is_empty() {
+            // Parse, store rules, and delete stale outputs
+            let parse_and_store = |tupfiles: &[PathBuf],
+                                   db: &tup_db::TupDb,
+                                   cache: &mut tup_db::EntryCache,
+                                   tup_root: &Path,
+                                   config: &std::collections::BTreeMap<String, String>,
+                                   gitignore_dirs: &mut std::collections::HashMap<
+                PathBuf,
+                Vec<String>,
+            >|
              -> anyhow::Result<(usize, bool)> {
                 let mut total = 0;
                 let mut any_stale = false;
@@ -382,20 +385,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
                 Ok((total, any_stale))
             };
 
-        let (stored, stale) = parse_and_store(
-            &tupfiles,
-            &db,
-            &mut cache,
-            &tup_root,
-            &config,
-            &mut gitignore_dirs,
-        )?;
-        total_stored = stored;
-        let had_stale_outputs = stale;
-
-        // If stale outputs were deleted, re-parse to get correct glob results
-        if had_stale_outputs {
-            let (stored2, _) = parse_and_store(
+            let (stored, stale) = parse_and_store(
                 &tupfiles,
                 &db,
                 &mut cache,
@@ -403,7 +393,57 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
                 &config,
                 &mut gitignore_dirs,
             )?;
-            total_stored = stored2;
+            total_stored = stored;
+            let had_stale_outputs = stale;
+
+            // If stale outputs were deleted, re-parse to get correct glob results
+            if had_stale_outputs {
+                let (stored2, _) = parse_and_store(
+                    &tupfiles,
+                    &db,
+                    &mut cache,
+                    &tup_root,
+                    &config,
+                    &mut gitignore_dirs,
+                )?;
+                total_stored = stored2;
+            }
+        } // end if !tupfiles.is_empty()
+
+        // Clean up directories that had Tupfiles deleted.
+        // Port of C tup's process_create_nodes(): when a Tupfile is deleted,
+        // all CMD nodes and their Generated outputs in that directory are removed.
+        // We detect this by finding directories with CMD nodes that aren't in
+        // the current set of parsed Tupfile directories.
+        let parsed_dirs: std::collections::HashSet<PathBuf> = tupfiles
+            .iter()
+            .filter_map(|t| tup_root.join(t).parent().map(|p| p.to_path_buf()))
+            .collect();
+        // Collect all directories that might have CMD nodes: root + subdirs
+        let mut dirs_to_check = vec![(DOT_DT, tup_root.clone())];
+        let all_dir_nodes = db.node_select_dir(DOT_DT)?;
+        for dir_node in &all_dir_nodes {
+            if dir_node.node_type == NodeType::Dir {
+                if let Ok(dir_path) = resolve_dir_path(&db, dir_node.id, &tup_root) {
+                    dirs_to_check.push((dir_node.id, dir_path));
+                }
+            }
+        }
+        for (dir_id, dir_path) in &dirs_to_check {
+            if !parsed_dirs.contains(dir_path) {
+                // This directory wasn't parsed — check if it has stale CMDs
+                let nodes = db.node_select_dir(*dir_id)?;
+                let has_cmds = nodes.iter().any(|n| n.node_type == NodeType::Cmd);
+                if has_cmds {
+                    // Clean up: pass empty rules to store_rules, which will
+                    // remove all existing CMDs and their outputs
+                    let result = tup_db::store_rules(&db, &mut cache, *dir_id, &[])?;
+                    for stale in &result.stale_outputs {
+                        let stale_path = dir_path.join(stale);
+                        let _ = std::fs::remove_file(&stale_path);
+                    }
+                }
+            }
         }
 
         db.commit()?;
