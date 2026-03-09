@@ -574,6 +574,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             line_number: 0,
             had_inputs: !cmd.inputs.is_empty(),
             vars_snapshot: None,
+            bin: None,
         };
         dir_rule_groups
             .entry(dir_path.clone())
@@ -1028,6 +1029,11 @@ fn expand_rules_for_dir(
     let mut expanded = Vec::new();
     // Track declared outputs from prior rules for glob resolution
     let mut declared_outputs: Vec<String> = Vec::new();
+    // Track bins: bin_name → accumulated output files.
+    // Bins are C tup's runtime collection mechanism — outputs tagged with
+    // {bin} are accumulated and can be used as inputs via {bin} syntax.
+    let mut bins: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     let dir_name = work_dir
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -1054,14 +1060,36 @@ fn expand_rules_for_dir(
             vdb
         };
 
+        // Expand {bin} references in inputs before glob expansion.
+        // In C tup, bins are runtime collections accumulated during parsing.
+        let expanded_inputs: Vec<String> = rule
+            .inputs
+            .iter()
+            .flat_map(|input| {
+                if input.starts_with('{') && input.ends_with('}') && input.len() > 2 {
+                    let bin_name = &input[1..input.len() - 1];
+                    bins.get(bin_name).cloned().unwrap_or_default()
+                } else {
+                    vec![input.clone()]
+                }
+            })
+            .collect();
+
         // Expand input globs against filesystem + declared outputs
-        let matched_inputs = expand_globs_with_declared(&rule.inputs, work_dir, &declared_outputs)?;
+        let raw_inputs = expand_globs_with_declared(&expanded_inputs, work_dir, &declared_outputs)?;
+        // Deduplicate inputs (C tup: bins + explicit may overlap, prune dups)
+        let mut seen = std::collections::HashSet::new();
+        let matched_inputs: Vec<String> = raw_inputs
+            .into_iter()
+            .filter(|s| seen.insert(s.clone()))
+            .collect();
 
         // Check for missing explicit inputs (non-glob, non-declared)
         // Matches C tup parser.c:2746-2757: "Explicitly named file not found"
         // Skip cross-directory paths (containing ..) as they reference other dirs
-        for input in &rule.inputs {
-            if !tup_parser::is_glob(input) && !input.is_empty() && !input.contains("..") {
+        for input in &expanded_inputs {
+            // Skip bin refs, group refs, globs, empty, and cross-directory paths
+            if is_explicit_file_ref(input) {
                 let on_disk = work_dir.join(input).exists();
                 let in_declared = declared_outputs.contains(input);
                 if !on_disk && !in_declared {
@@ -1073,9 +1101,9 @@ fn expand_rules_for_dir(
             }
         }
 
-        // Check order-only inputs too (skip cross-directory)
+        // Check order-only inputs too (skip cross-directory, groups, bins)
         for oo_input in &rule.order_only_inputs {
-            if !tup_parser::is_glob(oo_input) && !oo_input.is_empty() && !oo_input.contains("..") {
+            if is_explicit_file_ref(oo_input) {
                 let on_disk = work_dir.join(oo_input).exists();
                 let in_declared = declared_outputs.contains(oo_input);
                 if !on_disk && !in_declared {
@@ -1168,6 +1196,12 @@ fn expand_rules_for_dir(
 
                 // Track these outputs for later rules
                 declared_outputs.extend(outputs.clone());
+                // Add outputs to bin if rule has one
+                if let Some(ref bin_name) = rule.bin {
+                    bins.entry(bin_name.clone())
+                        .or_default()
+                        .extend(outputs.clone());
+                }
 
                 expanded.push(tup_parser::Rule {
                     foreach: false,
@@ -1183,6 +1217,7 @@ fn expand_rules_for_dir(
                     line_number: rule.line_number,
                     had_inputs: true,
                     vars_snapshot: None,
+                    bin: rule.bin.clone(),
                 });
             }
         } else {
@@ -1254,6 +1289,12 @@ fn expand_rules_for_dir(
 
             // Track these outputs for later rules
             declared_outputs.extend(outputs.clone());
+            // Add outputs to bin if rule has one
+            if let Some(ref bin_name) = rule.bin {
+                bins.entry(bin_name.clone())
+                    .or_default()
+                    .extend(outputs.clone());
+            }
 
             expanded.push(tup_parser::Rule {
                 foreach: false,
@@ -1269,6 +1310,7 @@ fn expand_rules_for_dir(
                 line_number: rule.line_number,
                 had_inputs: rule.had_inputs,
                 vars_snapshot: None,
+                bin: rule.bin.clone(),
             });
         }
     }
@@ -1306,6 +1348,16 @@ fn expand_rules_for_dir(
     }
 
     Ok(expanded)
+}
+
+/// Check if an input name refers to an explicit file (not a glob, bin, group, or cross-dir path).
+fn is_explicit_file_ref(name: &str) -> bool {
+    !name.is_empty() && !tup_parser::is_glob(name) && !name.contains("..") && !is_group_or_bin(name)
+}
+
+/// Check if a name is a group (<name>) or bin ({name}) reference.
+fn is_group_or_bin(name: &str) -> bool {
+    (name.starts_with('<') && name.ends_with('>')) || (name.starts_with('{') && name.ends_with('}'))
 }
 
 /// Check if a command string contains an unescaped percent pattern.

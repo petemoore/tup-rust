@@ -728,6 +728,7 @@ mod tests {
             line_number: 1,
             had_inputs: !inputs.is_empty(),
             vars_snapshot: None,
+            bin: None,
         }
     }
 
@@ -746,6 +747,7 @@ mod tests {
             line_number: 1,
             had_inputs: !inputs.is_empty(),
             vars_snapshot: None,
+            bin: None,
         }
     }
 
@@ -939,6 +941,7 @@ mod tests {
             line_number: 1,
             had_inputs: false,
             vars_snapshot: None,
+            bin: None,
         };
 
         let results = updater.execute_rule(&rule).unwrap();

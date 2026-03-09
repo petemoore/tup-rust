@@ -183,6 +183,7 @@ impl BangDb {
             line_number,
             had_inputs,
             vars_snapshot: None,
+            bin: None,
         })
     }
 

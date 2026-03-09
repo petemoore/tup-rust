@@ -521,6 +521,7 @@ impl TupfileReader {
             line_number: rule.line_number,
             had_inputs: rule.had_inputs,
             vars_snapshot,
+            bin: rule.bin.clone(),
         }
     }
 
