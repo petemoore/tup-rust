@@ -1,104 +1,208 @@
-# Dependency Tracking Sub-Plan
+# FUSE Implementation Plan
 
-This plan covers the OS-level dependency tracking features needed for
-full parity with the C tup implementation.
+**Goal**: Port the C tup FUSE/server subsystem to Rust for automatic dependency tracking.
 
-## Overview
+**Why this matters**: ~100+ of 989 compat tests require FUSE (or LD_PRELOAD) for file
+access interception. Without it, tup relies solely on declared dependencies from Tupfiles.
 
-Tup's key innovation is **automatic dependency detection**: instead of
-requiring users to declare every input file, tup intercepts file system
-operations during command execution and automatically records which files
-were read/written. This is done via three mechanisms:
+## C Source Inventory
 
-1. **FUSE filesystem** — mount at `.tup/mnt`, redirect child processes through it
-2. **LD_PRELOAD** — inject a shared library that wraps syscalls (Linux)
-3. **DLL injection** — Windows equivalent of LD_PRELOAD
+| C File | LOC | Purpose | Rust File | Ported |
+|--------|-----|---------|-----------|--------|
+| fuse_fs.c | 1550 | FUSE filesystem callbacks | tup_fuse.rs | ~15% (structs only) |
+| fuse_server.c | 955 | Mount/unmount lifecycle, execution | fuse_server.rs + process.rs | ~10% |
+| master_fork.c | 886 | Process forking, namespaces | — | 0% |
+| file.c | 876 | File access tracking → DB | — | 0% |
+| depfile.c | 477 | LD_PRELOAD integration | depfile.rs | ~60% (format only) |
+| server.h + file.h | 191 | Data structures | tup_fuse.rs | ~40% |
+| **Total** | **4935** | | | **~15%** |
 
-Without these, tup relies solely on Tupfile declarations (which is what
-tup-rust currently does). With them, tup can detect undeclared dependencies
-and warn about them.
+## Work Packages
 
-## Phases
+Each work package is a single PR. If during implementation a package turns out to be
+larger than expected, split it into sub-packages and update this plan.
 
-### Phase A: Dependency Protocol [PR #37a] — DONE
-- [x] Define `AccessEvent` wire format
-- [x] Depfile writer (binary format: type + len + len2 + path + path2)
-- [x] Depfile reader/parser
-- [x] FileAccessSummary with categorization and deduplication
-- [x] Undeclared read/write detection
-- [x] System path filtering (/dev, /proc, /usr, etc.)
-- [x] 7 tests
+### WP1: File Access Tracking Core (file.c port) — ~200 LOC Rust
 
-### Phase B: Process Server [PR #37b] — DONE
-- [x] `ProcessServer` struct with ServerMode (None, LdPreload, Fuse)
-- [x] Command execution with environment setup
-- [x] TUP_DEPFILE environment variable for LD_PRELOAD mode
-- [x] LD_PRELOAD environment setup
-- [x] Post-execution depfile reading
-- [x] exec_and_verify() for dependency verification
-- [x] 7 tests
+Port the core file access recording logic from file.c.
 
-### Phase C: File Monitor Daemon [PR #37c] — DONE
-- [x] Monitor using `notify` crate (cross-platform: inotify/FSEvents/kqueue)
-- [x] Recursive directory watching
-- [x] Event deduplication
-- [x] Filtering (.tup, .git, hidden files)
-- [x] watch_for(duration) for timed monitoring
-- [x] 5 tests
+**C functions to port:**
+- `handle_open_file()` (34 LOC) — add path to read/write/unlink/var list
+- `handle_file()` (22 LOC) — main entry: resolve path, call handle_open_file
+- `handle_file_dtent()` (26 LOC) — handle access on a tup_entry
+- `handle_rename()` (30 LOC) — track rename events
+- `init_file_info()` (21 LOC) — initialize file_info (already partial)
+- `cleanup_file_info()` (9 LOC) — cleanup (Rust Drop)
+- `check_unlink_list()` (10 LOC) — validate unlinks
 
-### Phase D: LD_PRELOAD Shared Library [PR #39] — DONE
-- [x] C source for ldpreload.so (csrc/ldpreload.c, ~250 lines)
-- [x] Build via cc in build.rs (Linux only)
-- [x] Syscall wrapping: open, open64, fopen, fopen64, rename, unlink,
-      symlink, execve, chdir, fchdir
-- [x] CWD tracking for relative path resolution
-- [x] Depfile output (binary protocol matching access_event struct)
-- [x] Fork safety (pthread_atfork handlers)
-- [x] ccache and system path filtering (/dev, /sys, /proc)
-- [x] Thread-safe with pthread_mutex
-- [x] LdPreloadLib detector for finding compiled library
-- [x] 2 tests
+**Does NOT include:** write_files() (DB integration, that's WP5).
 
-### Phase E: FUSE Server — Linux [PR #40]
-- [ ] `fuser` crate integration
-- [ ] Mount at `.tup/mnt`
-- [ ] Path parsing: extract job ID from `@tupjob-N` prefix
-- [ ] File operations: getattr, readdir, read, write, open, release, unlink, rename
-- [ ] Thread-local file_info tracking per job
-- [ ] Namespace isolation (CLONE_NEWUSER) for unprivileged FUSE
-- [ ] Master fork process model
-- [ ] Tests: FUSE mount, intercept file operations
+**Test**: Unit tests for each function matching C behavior.
 
-### Phase F: FUSE Server — macOS [PR #41]
-- [ ] macFUSE (osxfuse) integration
-- [ ] Platform-specific mount/unmount
-- [ ] Same operation set as Linux FUSE
-- [ ] Tests: macOS FUSE operations
+### WP2: FUSE Filesystem — Basic Operations (~400 LOC Rust)
 
-### Phase G: Windows DLL Injection [PR #52]
-- [ ] Port dllinject.c to build via cc crate
-- [ ] IAT patching for Windows API functions
-- [ ] Hot patching for NTDLL functions
-- [ ] CreateFile/DeleteFile/MoveFile/CopyFile interception
-- [ ] CreateProcess injection propagation
-- [ ] Tests: Windows file access tracking
+Implement `fuser::Filesystem` trait for the core passthrough operations.
 
-### Phase H: Full Integration [PR #53]
-- [ ] Wire FUSE/LD_PRELOAD into updater execution path
-- [ ] Server mode selection (fuse, ldpreload, none)
-- [ ] `--no-fuse` / `--server` flags
-- [ ] Dependency verification: compare actual reads vs declared inputs
-- [ ] Undeclared dependency warnings
-- [ ] Extra output detection
-- [ ] Run C test suite against Rust binary
-- [ ] Performance benchmarks vs C version
+**C functions to port (from fuse_fs.c):**
+- `tup_fs_getattr()` (90 LOC) — stat files, handle mappings/tmpdirs
+- `tup_fs_readdir()` (132 LOC) — list directory, merge real+mapped+tmpdir
+- `tup_fs_open()` (58 LOC) — open file, track in read_list
+- `tup_fs_read()` (26 LOC) — pread from real/mapped file
+- `tup_fs_write()` (30 LOC) — pwrite to mapped file
+- `tup_fs_release()` (26 LOC) — close FD, decrement open_count
+- `context_check()` (39 LOC) — process group security check
+- `get_finfo()` / `put_finfo()` (31 LOC) — job lookup with locking
+- `find_mapping()` (13 LOC) — search mappings by realname
+- `tup_fuse_handle_file()` (22 LOC) — record access
 
-## Priority Order
+**Test**: Mount FUSE, read a file through it, verify access recorded.
 
-1. Phase A+B (dependency protocol + process server) — enables dep tracking without FUSE
-2. Phase C (file monitor) — enables `tup monitor` for fast rebuilds
-3. Phase D (LD_PRELOAD) — most common dep tracking method on Linux
-4. Phase E (Linux FUSE) — full dep tracking on Linux
-5. Phase F (macOS FUSE) — full dep tracking on macOS
-6. Phase G (Windows DLL) — Windows support
-7. Phase H (integration) — tie it all together
+### WP3: FUSE Filesystem — Write Operations (~300 LOC Rust)
+
+Implement write-side FUSE operations with temporary file mappings.
+
+**C functions to port:**
+- `mknod_internal()` (76 LOC) — create file with mapping to .tup/tmp
+- `tup_fs_mknod()` (5 LOC) — FUSE mknod callback
+- `tup_fs_create()` (20 LOC) — FUSE create callback
+- `tup_fs_mkdir()` (47 LOC) — virtual directory creation
+- `tup_fs_unlink()` (35 LOC) — record unlink, remove mapping
+- `tup_fs_rmdir()` (44 LOC) — remove virtual directory
+- `tup_fs_symlink()` (19 LOC) — symlink in virtual dir
+- `tup_fs_rename()` (82 LOC) — update mapping realname
+- `tup_fs_link()` (7 LOC) — return EPERM (no hard links)
+- `add_mapping_internal()` (50 LOC) — create virtual→temp mapping
+- `add_mapping()` (12 LOC) — wrapper
+
+**Test**: Create files through FUSE, verify they end up in .tup/tmp.
+
+### WP4: FUSE Mount/Unmount Lifecycle (~200 LOC Rust)
+
+Port the server initialization and teardown from fuse_server.c.
+
+**C functions to port:**
+- `server_init()` (175 LOC) — create .tup/mnt, .tup/tmp, start FUSE thread
+- `server_quit()` (13 LOC) — unmount, cleanup
+- `tup_unmount()` (16 LOC) — platform-specific unmount
+- `os_unmount()` (14 LOC per platform) — fusermount / unmount syscall
+- `fuse_thread()` (35 LOC) — background thread running fuse_main
+- `tup_fuse_fs_init()` (20 LOC) — rlimit setup
+- `sighandler()` (13 LOC) — signal handling
+
+**Test**: Mount and unmount FUSE, verify .tup/mnt exists during mount.
+
+### WP5: File Access → DB Integration (~250 LOC Rust)
+
+Connect the file access tracking to the tup database.
+
+**C functions to port:**
+- `write_files()` (82 LOC) — main dependency writer: reads file_info lists,
+  creates normal/sticky links in DB, handles ghost creation
+- `add_config_files()` (8 LOC) — add config dependencies
+- `add_parser_files()` (9 LOC) — add parser file dependencies
+- `process_depfile()` (74 LOC) — parse LD_PRELOAD depfile, call write_files
+
+**Dependencies**: Requires WP1 (file access tracking).
+
+**Test**: Execute a command through FUSE, verify DB has correct dependency links.
+
+### WP6: Command Execution with FUSE (~200 LOC Rust)
+
+Wire FUSE into the command execution path in the updater.
+
+**C functions to port:**
+- `server_exec()` (17 LOC) — add FUSE group, exec, remove group
+- `exec_internal()` (102 LOC) — core exec: wait for open_count, collect output
+- `virt_tup_open()` (27 LOC) — open virtual job directory
+- `virt_tup_close()` (12 LOC) — close virtual job directory
+- `finfo_wait_open_count()` (30 LOC) — wait for all FDs to close
+
+**Dependencies**: Requires WP2-WP5.
+
+**Test**: Full `tup upd` with FUSE, verify dependency tracking works end-to-end.
+
+### WP7: Master Fork Process (~400 LOC Rust)
+
+Port the process supervision from master_fork.c.
+
+**C functions to port:**
+- `server_pre_init()` (112 LOC) — fork master, setup namespaces
+- `server_post_exit()` (32 LOC) — wait for children
+- `master_fork_loop()` (237 LOC) — main loop: receive exec messages, fork
+- `master_fork_exec()` (44 LOC) — send exec message via socket
+- `child_waiter()` (55 LOC) — wait thread for child processes
+- `write_all()` / `read_all_internal()` (31 LOC) — IPC helpers
+
+**Note**: This is optional for initial functionality. WP6 can use direct
+fork+exec instead of the master_fork model. Master fork adds namespace
+isolation (full_deps mode).
+
+### WP8: Linux Namespace Support (~150 LOC Rust)
+
+Port the namespace setup from master_fork.c (Linux only).
+
+**C functions to port:**
+- `deny_setgroups()` (26 LOC) — write to /proc/PID/setgroups
+- `update_map()` (25 LOC) — write uid/gid maps
+- Namespace flags in `server_pre_init()` — CLONE_NEWUSER, CLONE_NEWNS
+
+**Note**: macOS doesn't use namespaces; it relies on FUSE path isolation.
+
+### WP9: Privilege Management (~100 LOC Rust)
+
+Port the privilege dropping from fuse_server.c.
+
+**C functions to port:**
+- `tup_privileged()` (6 LOC)
+- `tup_drop_privs()` (23 LOC)
+- `tup_temporarily_drop_privs()` (17 LOC)
+- `tup_restore_privs()` (14 LOC)
+
+### WP10: Parser Mode FUSE (~100 LOC Rust)
+
+Port the parser-mode FUSE support for run-scripts.
+
+**C functions to port:**
+- `server_parser_start()` (19 LOC)
+- `server_parser_stop()` (24 LOC)
+- `tup_fuse_server_get_dir_entries()` (32 LOC)
+- `readdir_parser()` (12 LOC)
+
+**Dependencies**: Requires WP2, WP4.
+
+### WP11: Additional FUSE Operations (~150 LOC Rust)
+
+Port remaining FUSE operations.
+
+**C functions to port:**
+- `tup_fs_access()` (59 LOC)
+- `tup_fs_readlink()` (43 LOC)
+- `tup_fs_chmod()` / `tup_fs_chown()` (~20 LOC)
+- `tup_fs_truncate()` (25 LOC)
+- `tup_fs_utimens()` (20 LOC)
+- `tup_fs_flush()` (7 LOC)
+- `tup_fs_statfs()` (10 LOC)
+- `get_virtual_var()` (25 LOC) — @tup@ variable handling
+
+## Execution Order
+
+**Phase 1 — Core (WP1 → WP2 → WP3)**: File tracking + basic FUSE ops.
+Get FUSE mounted and intercepting reads/writes.
+
+**Phase 2 — Integration (WP4 → WP5 → WP6)**: Mount lifecycle + DB writes + updater.
+Run `tup upd` with FUSE and see dependencies recorded.
+
+**Phase 3 — Hardening (WP7 → WP8 → WP9 → WP10 → WP11)**: Process model +
+namespaces + parser mode + remaining ops.
+
+## Recursive Decomposition Rule
+
+If any WP takes more than ~400 LOC of Rust or touches more than 3 files,
+split it before starting. Update this plan with the sub-packages. The plan
+is a living document.
+
+## Build Requirements
+
+macOS: `PKG_CONFIG_PATH=/usr/local/lib/pkgconfig` (macFUSE installed)
+Linux: `libfuse-dev` or `libfuse3-dev`
+Feature flag: `--features fuse`
