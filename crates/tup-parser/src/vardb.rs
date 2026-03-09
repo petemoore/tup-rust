@@ -103,6 +103,18 @@ impl ParseVarDb {
                     result.push_str(value);
                 }
                 // Unknown variables expand to empty string
+            } else if ch == '\\' && chars.peek() == Some(&'@') {
+                // Escaped @: \@( prevents config expansion, \@ alone is preserved
+                let mut lookahead = chars.clone();
+                lookahead.next(); // skip '@'
+                if lookahead.peek() == Some(&'(') {
+                    // \@( → @( in output (don't expand)
+                    chars.next(); // consume '@'
+                    result.push('@');
+                } else {
+                    // \@ not followed by ( — preserve both characters
+                    result.push('\\');
+                }
             } else if ch == '@' && chars.peek() == Some(&'(') {
                 // Config variable: @(VAR)
                 chars.next(); // consume '('
