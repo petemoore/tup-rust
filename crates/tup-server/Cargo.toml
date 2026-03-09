@@ -5,12 +5,17 @@ edition.workspace = true
 license.workspace = true
 description = "FUSE/LD_PRELOAD server for dependency tracking in tup"
 
+[features]
+fuse = ["dep:fuser"]
+
 [dependencies]
 tup-types = { path = "../tup-types" }
 tup-db = { path = "../tup-db" }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
+libc = "0.2"
+fuser = { version = "0.14", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

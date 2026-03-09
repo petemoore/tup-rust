@@ -9,13 +9,13 @@ repos:
         pass_filenames: false
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        entry: bash -c 'PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH cargo clippy --all-targets --all-features -- -D warnings'
         language: system
         types: [rust]
         pass_filenames: false
       - id: cargo-test
         name: cargo test
-        entry: cargo test
+        entry: bash -c 'PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH cargo test'
         language: system
         types: [rust]
         pass_filenames: false

@@ -7,6 +7,8 @@ pub mod depfile;
 pub mod fuse_server;
 pub mod ldpreload;
 pub mod process;
+#[cfg(feature = "fuse")]
+pub mod tup_fuse;
 
 pub use depfile::{read_depfile, write_depfile, FileAccess, FileAccessSummary};
 pub use fuse_server::{check_fuse_available, FuseConfig, FuseStatus, PassthroughFuse};
