@@ -633,6 +633,20 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         cmd_id_map.push((dir_path, cmd.cmd_id));
     }
 
+    // Mount FUSE for automatic dependency tracking (if available)
+    // C: server_init(SERVER_UPDATER_MODE) before command execution
+    #[cfg(feature = "fuse")]
+    let _fuse_mount = match tup_server::fuse_mount::FuseMount::mount(&tup_root) {
+        Ok(mount) => {
+            log::debug!("FUSE mounted at {}", mount.mount_point().display());
+            Some(mount)
+        }
+        Err(e) => {
+            log::debug!("FUSE not available: {e}");
+            None
+        }
+    };
+
     // Execute commands grouped by directory
     let mut total_run = 0usize;
     let mut total_failed = 0usize;
@@ -642,6 +656,8 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         total_run += run;
         total_failed += failed;
     }
+
+    // FUSE unmount happens automatically when _fuse_mount drops
 
     // Post-execution: clear modify flags and track outputs
     // Port of C tup's update_work() post-success handling (updater.c:2170-2185)
@@ -1792,11 +1808,21 @@ fn cmd_options(jobs: Option<usize>) {
 }
 
 fn cmd_server() {
-    // Report server mode. On macOS there's no LD_PRELOAD or FUSE support,
-    // so we report "none". On Linux, we'll report the configured mode.
+    // Report server mode matching C tup behavior.
+    // C tup: reports "fuse" on macOS/FreeBSD, "ldpreload" on Linux.
+    #[cfg(feature = "fuse")]
+    {
+        let status = tup_server::check_fuse_available();
+        if status == tup_server::FuseStatus::Available {
+            println!("fuse");
+            return;
+        }
+    }
     #[cfg(target_os = "linux")]
-    println!("ldpreload");
-    #[cfg(not(target_os = "linux"))]
+    {
+        println!("ldpreload");
+        return;
+    }
     println!("none");
 }
 
