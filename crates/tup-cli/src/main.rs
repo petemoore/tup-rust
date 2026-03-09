@@ -238,17 +238,30 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     let tupfiles = tup_platform::scanner::find_tupfiles(&tup_root)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // Track directories with .gitignore enabled and their outputs
+    let mut gitignore_dirs: std::collections::HashMap<PathBuf, Vec<String>> =
+        std::collections::HashMap::new();
+
     if !tupfiles.is_empty() {
         db.begin()?;
 
         let mut total_stored = 0usize;
+
         for tupfile_rel in &tupfiles {
             let tupfile_path = tup_root.join(tupfile_rel);
             let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
             let filename = tupfile_rel.to_string_lossy();
 
-            let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+            let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+            let rules = parse_result.rules;
             let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
+
+            if parse_result.gitignore {
+                let outputs: Vec<String> = expanded.iter()
+                    .flat_map(|r| r.outputs.iter().cloned())
+                    .collect();
+                gitignore_dirs.insert(tupfile_dir.to_path_buf(), outputs);
+            }
 
             // Find the dir_id for this directory
             let dir_rel = tupfile_dir.strip_prefix(&tup_root).unwrap_or(Path::new(""));
@@ -286,6 +299,11 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         db.begin()?;
         db.flags_clear_all()?;
         db.commit()?;
+        // Still need to handle gitignore even with no commands
+        if !gitignore_dirs.is_empty() {
+            generate_gitignore_files(&gitignore_dirs, &tup_root);
+        }
+        remove_stale_gitignore_files(&tup_root, &gitignore_dirs);
         println!("[ tup ] No commands to execute. Everything is up-to-date.");
         return Ok(());
     }
@@ -321,7 +339,8 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         let tupfile_path = tup_root.join(tupfile_rel);
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
-        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+            let rules = parse_result.rules;
         let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
         for rule in expanded {
             all_rules.push((tupfile_dir.to_path_buf(), rule));
@@ -371,8 +390,8 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
 
             if let Ok(dir_id) = resolve_dir_id(&db, dir_rel) {
                 let filename = tupfile_rel.to_string_lossy();
-                if let Ok(rules) = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename) {
-                    let expanded = expand_rules_for_dir(&rules, tupfile_dir).unwrap_or_default();
+                if let Ok(pr) = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename) {
+                    let expanded = expand_rules_for_dir(&pr.rules, tupfile_dir).unwrap_or_default();
                     for rule in &expanded {
                         // Find the CMD node for this rule
                         if let Ok(Some(cmd_row)) = db.node_select(dir_id, &rule.command.command) {
@@ -401,6 +420,13 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     }
     db.commit()?;
 
+    // Generate .gitignore files for directories that requested it
+    if !gitignore_dirs.is_empty() {
+        generate_gitignore_files(&gitignore_dirs, &tup_root);
+    }
+    // Remove stale .gitignore files from directories that no longer request it
+    remove_stale_gitignore_files(&tup_root, &gitignore_dirs);
+
     // Summary
     if total_failed > 0 {
         eprintln!("[ tup ] {total_failed} command(s) failed out of {total_run}.");
@@ -410,6 +436,63 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     }
 
     Ok(())
+}
+
+/// Generate .gitignore files for directories that requested them.
+///
+/// Each .gitignore contains the generated output files for that directory,
+/// plus the .gitignore file itself. Matches C tup behavior.
+fn generate_gitignore_files(
+    gitignore_dirs: &std::collections::HashMap<PathBuf, Vec<String>>,
+    tup_root: &Path,
+) {
+    for (dir, outputs) in gitignore_dirs {
+        let gitignore_path = dir.join(".gitignore");
+        let mut lines: Vec<String> = outputs.clone();
+        // The .gitignore file itself should be ignored
+        lines.push(".gitignore".to_string());
+        // In the root directory, also ignore .tup
+        if dir == tup_root {
+            lines.push(".tup".to_string());
+            // If .git exists, also add /.gitignore (root-anchored)
+            if dir.join(".git").exists() {
+                lines.push("/.gitignore".to_string());
+            }
+        }
+        lines.sort();
+        lines.dedup();
+        let content = lines.join("\n") + "\n";
+        if let Err(e) = std::fs::write(&gitignore_path, content) {
+            eprintln!("tup warning: failed to write {}: {e}", gitignore_path.display());
+        }
+    }
+}
+
+/// Remove .gitignore files from directories that no longer request them.
+/// Walks the project tree looking for .gitignore files to remove.
+fn remove_stale_gitignore_files(
+    tup_root: &Path,
+    active_dirs: &std::collections::HashMap<PathBuf, Vec<String>>,
+) {
+    fn walk_and_clean(dir: &Path, active: &std::collections::HashMap<PathBuf, Vec<String>>) {
+        let gitignore = dir.join(".gitignore");
+        if gitignore.exists() && !active.contains_key(dir) {
+            let _ = std::fs::remove_file(&gitignore);
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if !name_str.starts_with('.') {
+                        walk_and_clean(&path, active);
+                    }
+                }
+            }
+        }
+    }
+    walk_and_clean(tup_root, active_dirs);
 }
 
 /// Resolve a relative directory path to its TupId in the database.
@@ -579,7 +662,8 @@ fn cmd_parse() -> anyhow::Result<()> {
         let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
         let filename = tupfile_rel.to_string_lossy();
 
-        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+            let rules = parse_result.rules;
         let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
 
         // Find the dir_id for this directory
@@ -650,7 +734,8 @@ fn cmd_graph() -> anyhow::Result<()> {
             .to_string();
 
         let filename = tupfile_rel.to_string_lossy();
-        let rules = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+        let parse_result = parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename)?;
+        let rules = parse_result.rules;
 
         for rule in rules {
             all_rules.push((
@@ -995,21 +1080,30 @@ fn simple_glob_recursive(pattern: &[char], pi: usize, text: &[char], ti: usize) 
     ti == text.len()
 }
 
-/// Parse a Tupfile (either standard or Lua) and return rules.
+/// Result of parsing a Tupfile, including rules and metadata.
+struct ParseResult {
+    rules: Vec<tup_parser::Rule>,
+    gitignore: bool,
+}
+
+/// Parse a Tupfile (either standard or Lua) and return rules + metadata.
 fn parse_tupfile_any(
     tupfile_path: &Path,
     tupfile_dir: &Path,
     tup_root: &Path,
     filename: &str,
-) -> anyhow::Result<Vec<tup_parser::Rule>> {
+) -> anyhow::Result<ParseResult> {
     let content = std::fs::read_to_string(tupfile_path)?;
 
     if filename.ends_with(".lua") {
-        tup_parser::parse_lua_tupfile(&content, filename, tupfile_dir)
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        let rules = tup_parser::parse_lua_tupfile(&content, filename, tupfile_dir)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(ParseResult { rules, gitignore: false })
     } else {
         let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
-        Ok(reader.evaluate_with_dirs(Some(tupfile_dir), Some(tup_root), None)?)
+        let rules = reader.evaluate_with_dirs(Some(tupfile_dir), Some(tup_root), None)?;
+        let gitignore = reader.gitignore_requested();
+        Ok(ParseResult { rules, gitignore })
     }
 }
 

@@ -53,6 +53,8 @@ pub struct TupfileReader {
     vars: ParseVarDb,
     bangs: BangDb,
     lines: Vec<ParsedLine>,
+    /// Whether `.gitignore` directive was found during evaluation.
+    gitignore_requested: bool,
 }
 
 #[derive(Clone)]
@@ -66,6 +68,7 @@ impl TupfileReader {
     pub fn parse(content: &str, filename: &str) -> Result<Self, ParseError> {
         let mut reader = TupfileReader {
             vars: ParseVarDb::new(),
+            gitignore_requested: false,
             bangs: BangDb::new(),
             lines: Vec::new(),
         };
@@ -325,6 +328,7 @@ impl TupfileReader {
                                             self.vars.set("TUP_CWD", &cwd);
                                         }
                                         self.bangs = sub_reader.bangs;
+                                        self.gitignore_requested |= sub_reader.gitignore_requested;
                                         rules.extend(sub_rules);
                                     }
                                 }
@@ -355,9 +359,13 @@ impl TupfileReader {
                                         self.vars.set("TUP_CWD", &cwd);
                                     }
                                     self.bangs = sub_reader.bangs;
+                                    self.gitignore_requested |= sub_reader.gitignore_requested;
                                     rules.extend(sub_rules);
                                 }
                             }
+                        }
+                        TupfileLine::GitIgnore => {
+                            self.gitignore_requested = true;
                         }
                         TupfileLine::Error(msg) => {
                             let expanded = self.vars.expand(msg);
@@ -419,6 +427,11 @@ impl TupfileReader {
     /// Get all lines (for inspection).
     pub fn parsed_lines(&self) -> impl Iterator<Item = (usize, &TupfileLine)> {
         self.lines.iter().map(|pl| (pl.line_number, &pl.content))
+    }
+
+    /// Whether the `.gitignore` directive was found during evaluation.
+    pub fn gitignore_requested(&self) -> bool {
+        self.gitignore_requested
     }
 }
 
