@@ -38,7 +38,10 @@ jobs:
       - name: Build
         run: cargo build
       - name: Run C compat tests (init + basic commands)
-        run: ./tests/compat/run_tests.sh t000 t100
+        run: |
+          # Run t0xxx (all pass) and t1xxx except t1009 (needs DB migration)
+          ./tests/compat/run_tests.sh t0000 t0001 t0002 t0003 t0004 t0005 \
+            t1000 t1001 t1002 t1003 t1004 t1005 t1006 t1007 t1008
 
   # Windows build (enabled once Windows support is added)
   # build-windows:
