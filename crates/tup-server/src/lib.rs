@@ -5,6 +5,8 @@
 
 pub mod depfile;
 #[cfg(feature = "fuse")]
+pub mod file_db;
+#[cfg(feature = "fuse")]
 pub mod fuse_mount;
 pub mod fuse_server;
 pub mod ldpreload;
