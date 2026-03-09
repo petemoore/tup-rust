@@ -134,12 +134,33 @@ a fancy script runner.
 - t0000-t1009: 15/16 pass, t2000-t2179: 28/178 pass
 - Remaining failures need: ghost lifecycle, groups, tup.config, incremental rebuilds
 
-### PR T4: t3xxx Tests (Variables/Groups)
-- [ ] Port/run t3000-t3093 (~94 tests)
-- [ ] Group dependency handling
-- [ ] Fix all failures
+### PR T4: Deeper Fixes — IN PROGRESS (PRs #39-#46)
+- [x] TUP_CWD relative to Tupfile dir (not tup root)
+- [x] Dependency-aware parallel execution (wave-based scheduling)
+- [x] Stale command cleanup on re-parse
+- [x] Empty input variable skipping
+- [x] Dollar escaping fix (`\$` preserved in commands)
+- [x] %% percent escaping (pre-expanded execution)
+- [x] Conditional error detection (else/endif outside if, max depth 8)
+- [x] TUP_CWD restoration after includes
+- [x] Error directive implementation
+- [x] Lua tup.rule multi-arg and tup.foreach_rule
+- [x] .gitignore directive (generation + cleanup)
+- [x] Run directive (basic script execution)
+- [x] Cross-directory input validation skip
+- [x] Command output forwarding (stdout/stderr inline)
+- [x] Duplicate output detection (within-rule and cross-rule)
+- Overall: ~101/631 C compat tests pass
+  - t0-t2: 66/194, t3: 1/91, t4: 26/224, t5: 8/122
+- Remaining: ghost lifecycle, groups/bins, tup.config, node vars, incremental rebuilds
 
-### PR T5: t4xxx+ Tests (Advanced)
+### PR T5: t3xxx Tests (tup.config / @() Variables)
+- [ ] tup.config file parsing
+- [ ] @(CONFIG_VAR) expansion
+- [ ] varsetall command for test framework
+- [ ] Config variable dependency tracking
+
+### PR T6: t4xxx+ Tests (Advanced)
 - [ ] Port/run t4000+ (~600 tests)
 - [ ] Monitor interaction, refactoring, compilation
 - [ ] Fix all failures (many may require FUSE/LD_PRELOAD)
