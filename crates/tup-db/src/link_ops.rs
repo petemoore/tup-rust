@@ -260,9 +260,23 @@ impl TupDb {
     ///
     /// Corresponds to `tup_db_modify_cmds_by_input()` in C.
     pub fn modify_cmds_by_input(&self, input_id: TupId) -> DbResult<()> {
+        // C tup only checks normal_link (auto-detected via LD_PRELOAD/FUSE).
+        // We also check sticky_link since we store declared inputs as sticky
+        // links and don't yet have LD_PRELOAD/FUSE auto-detection.
         self.conn().execute(
             "INSERT OR IGNORE INTO modify_list \
              SELECT l.to_id FROM normal_link l \
+             JOIN node n ON l.to_id = n.id \
+             WHERE l.from_id=?1 AND (n.type=?2 OR n.type=?3)",
+            params![
+                input_id.raw(),
+                NodeType::Cmd.as_i32(),
+                NodeType::Group.as_i32(),
+            ],
+        )?;
+        self.conn().execute(
+            "INSERT OR IGNORE INTO modify_list \
+             SELECT l.to_id FROM sticky_link l \
              JOIN node n ON l.to_id = n.id \
              WHERE l.from_id=?1 AND (n.type=?2 OR n.type=?3)",
             params![
