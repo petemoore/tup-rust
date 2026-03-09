@@ -1222,9 +1222,12 @@ fn parse_tupfile_any(
         })
     } else {
         let mut reader = tup_parser::TupfileReader::parse(&content, filename)?;
-        // Load config variables for @(VAR) expansion
+        // Load config variables for @(VAR) and $(CONFIG_VAR) expansion
         for (k, v) in config {
             reader.set_config(k, v);
+            // Also make config vars available as $(CONFIG_VAR)
+            // Matches C tup behavior
+            reader.set_var(&format!("CONFIG_{k}"), v);
         }
         let rules = reader.evaluate_with_dirs(Some(tupfile_dir), Some(tup_root), None)?;
         let gitignore = reader.gitignore_requested();

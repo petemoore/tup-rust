@@ -508,6 +508,11 @@ impl TupfileReader {
         self.vars.set_config(name, value);
     }
 
+    /// Set a regular variable (for pre-loading config variables as $(CONFIG_VAR)).
+    pub fn set_var(&mut self, name: &str, value: &str) {
+        self.vars.set(name, value);
+    }
+
     /// Whether the `.gitignore` directive was found during evaluation.
     pub fn gitignore_requested(&self) -> bool {
         self.gitignore_requested
