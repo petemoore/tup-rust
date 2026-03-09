@@ -170,8 +170,8 @@ impl TupfileReader {
                             message: "too many nested if statements".to_string(),
                         });
                     }
-                    let is_active = if_stack.last().copied().unwrap_or(true);
-                    let defined = is_active && self.vars.get(var).is_some();
+                    let parent_active = if_stack.iter().all(|&b| b);
+                    let defined = parent_active && self.vars.get(var).is_some();
                     if_stack.push(defined);
                 }
                 TupfileLine::Ifndef(var) => {
@@ -182,8 +182,8 @@ impl TupfileReader {
                             message: "too many nested if statements".to_string(),
                         });
                     }
-                    let is_active = if_stack.last().copied().unwrap_or(true);
-                    let defined = is_active && self.vars.get(var).is_some();
+                    let parent_active = if_stack.iter().all(|&b| b);
+                    let defined = parent_active && self.vars.get(var).is_some();
                     if_stack.push(!defined);
                 }
                 TupfileLine::Ifeq(a, b) => {
@@ -194,8 +194,8 @@ impl TupfileReader {
                             message: "too many nested if statements".to_string(),
                         });
                     }
-                    let is_active = if_stack.last().copied().unwrap_or(true);
-                    let eq = if is_active {
+                    let parent_active = if_stack.iter().all(|&b| b);
+                    let eq = if parent_active {
                         let ea = self.vars.expand(a);
                         let eb = self.vars.expand(b);
                         ea == eb
@@ -212,8 +212,8 @@ impl TupfileReader {
                             message: "too many nested if statements".to_string(),
                         });
                     }
-                    let is_active = if_stack.last().copied().unwrap_or(true);
-                    let eq = if is_active {
+                    let parent_active = if_stack.iter().all(|&b| b);
+                    let eq = if parent_active {
                         let ea = self.vars.expand(a);
                         let eb = self.vars.expand(b);
                         ea != eb
@@ -223,8 +223,16 @@ impl TupfileReader {
                     if_stack.push(eq);
                 }
                 TupfileLine::Else => {
-                    if let Some(last) = if_stack.last_mut() {
-                        *last = !*last;
+                    if !if_stack.is_empty() {
+                        // Only flip if the parent scope is active.
+                        // C tup uses a bitmask: else flips only the current
+                        // level's bit, but if_true() checks the entire mask.
+                        let n = if_stack.len();
+                        let parent_active = n <= 1 || if_stack[..n - 1].iter().all(|&b| b);
+                        if parent_active {
+                            let last = if_stack.last_mut().unwrap();
+                            *last = !*last;
+                        }
                     } else {
                         return Err(ParseError::Syntax {
                             file: self.filename.clone(),
@@ -243,8 +251,8 @@ impl TupfileReader {
                     }
                 }
                 _ => {
-                    // Only process if we're in an active branch
-                    let active = if_stack.last().copied().unwrap_or(true);
+                    // Only process if we're in an active branch (ALL levels must be true)
+                    let active = if_stack.iter().all(|&b| b);
                     if !active {
                         continue;
                     }
