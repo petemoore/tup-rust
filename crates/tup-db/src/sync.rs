@@ -204,9 +204,17 @@ fn sync_dir(
                     db.flag_add(row.id, TupFlags::Modify)?;
                     result.files_deleted += 1;
                 }
-                NodeType::Generated | NodeType::Cmd | NodeType::Group => {
-                    // Generated files, commands, and groups are managed
-                    // by the parser, not the scanner
+                NodeType::Generated => {
+                    // Generated file deleted from disk — re-execute the
+                    // command that produces it. C tup flags the producing
+                    // command (via srcid) for re-execution.
+                    if row.srcid > 0 {
+                        db.flag_add(TupId::new(row.srcid), TupFlags::Modify)?;
+                    }
+                    result.files_deleted += 1;
+                }
+                NodeType::Cmd | NodeType::Group => {
+                    // Commands and groups are managed by the parser
                 }
                 NodeType::Ghost => {
                     // Already a ghost, nothing to do
