@@ -559,6 +559,114 @@ impl Filesystem for TupFuseFs {
         }
     }
 
+    /// Check file access permissions.
+    /// Port of C tup's tup_fs_access() (fuse_fs.c:437-495).
+    fn access(&mut self, _req: &Request<'_>, ino: u64, mask: i32, reply: fuser::ReplyEmpty) {
+        let path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        // Virtual @tupjob-N dirs always accessible
+        if path.to_string_lossy().contains(TUP_JOB) {
+            reply.ok();
+            return;
+        }
+
+        let real_path = self.resolve_real_path(&path);
+        // Use faccessat on the real path
+        let c_path = match std::ffi::CString::new(real_path.to_string_lossy().as_bytes()) {
+            Ok(p) => p,
+            Err(_) => {
+                reply.error(libc::EINVAL);
+                return;
+            }
+        };
+        let rc = unsafe { libc::access(c_path.as_ptr(), mask) };
+        if rc == 0 {
+            reply.ok();
+        } else {
+            reply.error(
+                std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EACCES),
+            );
+        }
+    }
+
+    /// Set file attributes (chmod, truncate, utimes).
+    /// Port of C tup's tup_fs_chmod/truncate/utimens.
+    fn setattr(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        mode: Option<u32>,
+        _uid: Option<u32>,
+        _gid: Option<u32>,
+        size: Option<u64>,
+        _atime: Option<fuser::TimeOrNow>,
+        _mtime: Option<fuser::TimeOrNow>,
+        _ctime: Option<SystemTime>,
+        _fh: Option<u64>,
+        _crtime: Option<SystemTime>,
+        _chgtime: Option<SystemTime>,
+        _bkuptime: Option<SystemTime>,
+        _flags: Option<u32>,
+        reply: ReplyAttr,
+    ) {
+        let path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+        let real_path = self.resolve_real_path(&path);
+
+        // Handle truncate
+        if let Some(new_size) = size {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&real_path) {
+                let _ = f.set_len(new_size);
+            }
+        }
+
+        // Handle chmod
+        if let Some(new_mode) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(new_mode);
+            let _ = std::fs::set_permissions(&real_path, perms);
+        }
+
+        // Return updated attributes
+        match std::fs::symlink_metadata(&real_path) {
+            Ok(meta) => {
+                let attr = metadata_to_attr(ino, &meta);
+                reply.attr(&TTL, &attr);
+            }
+            Err(_) => reply.error(libc::EIO),
+        }
+    }
+
+    /// Get filesystem statistics.
+    fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: fuser::ReplyStatfs) {
+        reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
+    }
+
+    /// Flush is called on close — just return OK.
+    fn flush(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        _fh: u64,
+        _lock_owner: u64,
+        reply: fuser::ReplyEmpty,
+    ) {
+        reply.ok();
+    }
+
     /// Read directory entries.
     /// Port of C tup's tup_fs_readdir() (fuse_fs.c:588-724).
     fn readdir(
