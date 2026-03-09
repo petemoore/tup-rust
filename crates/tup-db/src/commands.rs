@@ -126,17 +126,40 @@ pub fn store_rules(
         // This matches C tup's tup_db_write_outputs()/tup_db_write_inputs()
         // which reconcile old links with new ones on each parse.
         if was_existing {
-            // Remove old CMD → output normal links
+            // Check if outputs changed — flag MODIFY if so.
             let old_output_ids = db.get_normal_outputs(cmd_id)?;
+            let old_output_names: std::collections::HashSet<String> = old_output_ids
+                .iter()
+                .filter_map(|id| db.node_select_by_id(*id).ok().flatten())
+                .map(|row| row.name)
+                .collect();
+            // Check if outputs changed — flag MODIFY if so.
+            // C tup: tup_db_write_outputs() sets outputs_differ=1 when
+            // add_output or rm_output callbacks fire, then calls
+            // tup_db_add_modify_list(cmdid). Input changes alone do NOT
+            // trigger MODIFY in C tup (only output changes do).
+            let new_output_names: std::collections::HashSet<&str> = outputs
+                .iter()
+                .chain(rule.extra_outputs.iter())
+                .map(|s| s.as_str())
+                .collect();
+            let outputs_differ = old_output_names
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<std::collections::HashSet<&str>>()
+                != new_output_names;
+            if outputs_differ {
+                db.flag_add(cmd_id, TupFlags::Modify)?;
+            }
+
+            // Remove old links
             for old_out_id in &old_output_ids {
                 db.link_remove(cmd_id, *old_out_id, LinkType::Normal)?;
             }
-            // Remove old input → CMD sticky links
             let old_sticky_ids = db.get_sticky_inputs(cmd_id)?;
             for old_in_id in &old_sticky_ids {
                 db.link_remove(*old_in_id, cmd_id, LinkType::Sticky)?;
             }
-            // Remove old input → CMD normal links
             let old_normal_ids = db.get_normal_inputs(cmd_id)?;
             for old_in_id in &old_normal_ids {
                 db.link_remove(*old_in_id, cmd_id, LinkType::Normal)?;
