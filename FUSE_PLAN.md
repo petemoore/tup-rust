@@ -43,17 +43,30 @@ Port the core file access recording logic from file.c.
 
 Implement `fuser::Filesystem` trait for the core passthrough operations.
 
-**C functions to port (from fuse_fs.c):**
-- `tup_fs_getattr()` (90 LOC) — stat files, handle mappings/tmpdirs
-- `tup_fs_readdir()` (132 LOC) — list directory, merge real+mapped+tmpdir
-- `tup_fs_open()` (58 LOC) — open file, track in read_list
-- `tup_fs_read()` (26 LOC) — pread from real/mapped file
-- `tup_fs_write()` (30 LOC) — pwrite to mapped file
-- `tup_fs_release()` (26 LOC) — close FD, decrement open_count
+**NOTE**: `fuser` uses the low-level (inode-based) FUSE API, while C tup uses
+the high-level (path-based) API. We need an inode→path mapping layer.
+
+Split into sub-packages due to complexity:
+
+#### WP2a: Inode Management + lookup + getattr (~200 LOC Rust)
+
+- Inode table: inode → real filesystem path mapping
+- `lookup()` — resolve name in parent directory, assign inode
+- `getattr()` — stat file by inode, handle mappings/tmpdirs
 - `context_check()` (39 LOC) — process group security check
 - `get_finfo()` / `put_finfo()` (31 LOC) — job lookup with locking
-- `find_mapping()` (13 LOC) — search mappings by realname
 - `tup_fuse_handle_file()` (22 LOC) — record access
+
+#### WP2b: readdir (~150 LOC Rust)
+
+- `readdir()` — list directory by inode, merge real+mapped+tmpdir
+- Uses inode table for directory entry resolution
+
+#### WP2c: open + read + release (~150 LOC Rust)
+
+- `open()` — open file, track in read_list, return FH
+- `read()` — pread from real/mapped file
+- `release()` — close FD, decrement open_count
 
 **Test**: Mount FUSE, read a file through it, verify access recorded.
 

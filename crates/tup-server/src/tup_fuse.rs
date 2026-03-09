@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tup_types::AccessType;
@@ -208,16 +208,54 @@ pub struct TupFuseFs {
     /// Our process group ID for context checking.
     /// C: static pid_t ourpgid
     ourpgid: u32,
+    /// Inode→path mapping.
+    /// fuser uses inodes (low-level API); C tup uses paths (high-level API).
+    /// We bridge the gap with this table. Inode 1 = root.
+    inodes: RwLock<BTreeMap<u64, PathBuf>>,
+    /// Path→inode reverse mapping.
+    path_to_inode: RwLock<BTreeMap<PathBuf, u64>>,
+    /// Next inode number.
+    next_inode: AtomicU64,
 }
 
 impl TupFuseFs {
     pub fn new(tup_top: &Path) -> Self {
         let pgid = unsafe { libc::getpgid(0) } as u32;
+        let mut inodes = BTreeMap::new();
+        let mut path_to_inode = BTreeMap::new();
+        // Inode 1 = FUSE root (= tup_top directory)
+        inodes.insert(1, tup_top.to_path_buf());
+        path_to_inode.insert(tup_top.to_path_buf(), 1);
         TupFuseFs {
             tup_top: tup_top.to_path_buf(),
             jobs: Arc::new(RwLock::new(BTreeMap::new())),
             ourpgid: pgid,
+            inodes: RwLock::new(inodes),
+            path_to_inode: RwLock::new(path_to_inode),
+            next_inode: AtomicU64::new(2), // 1 is root
         }
+    }
+
+    /// Get or assign an inode for a path.
+    fn get_or_create_inode(&self, path: &Path) -> u64 {
+        let p2i = self.path_to_inode.read().unwrap();
+        if let Some(&ino) = p2i.get(path) {
+            return ino;
+        }
+        drop(p2i);
+
+        let ino = self.next_inode.fetch_add(1, Ordering::SeqCst);
+        self.inodes.write().unwrap().insert(ino, path.to_path_buf());
+        self.path_to_inode
+            .write()
+            .unwrap()
+            .insert(path.to_path_buf(), ino);
+        ino
+    }
+
+    /// Look up the path for an inode.
+    fn inode_path(&self, ino: u64) -> Option<PathBuf> {
+        self.inodes.read().unwrap().get(&ino).cloned()
     }
 
     /// Register a job for tracking.
@@ -329,8 +367,196 @@ fn metadata_to_attr(ino: u64, meta: &std::fs::Metadata) -> FileAttr {
     }
 }
 
-// The fuser::Filesystem implementation will be added in the next commit
-// once the core data structures are verified working.
+/// Implement the fuser Filesystem trait for tup's passthrough FUSE.
+///
+/// C tup uses the high-level (path-based) libfuse API. The fuser crate
+/// uses the low-level (inode-based) API, so we maintain an inode→path
+/// mapping to bridge the gap.
+///
+/// Port of C tup's tup_fs_* callbacks from fuse_fs.c.
+impl Filesystem for TupFuseFs {
+    /// Look up a directory entry by name.
+    /// C: implicit in getattr/readdir path-based operations.
+    fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        let parent_path = match self.inode_path(parent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let child_path = parent_path.join(name);
+        match std::fs::symlink_metadata(&child_path) {
+            Ok(meta) => {
+                let ino = self.get_or_create_inode(&child_path);
+                let attr = metadata_to_attr(ino, &meta);
+                reply.entry(&TTL, &attr, 0);
+            }
+            Err(_) => {
+                reply.error(libc::ENOENT);
+            }
+        }
+    }
+
+    /// Get file attributes.
+    /// Port of C tup's tup_fs_getattr() (fuse_fs.c:344-435).
+    fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
+        let path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) => {
+                let attr = metadata_to_attr(ino, &meta);
+                reply.attr(&TTL, &attr);
+            }
+            Err(_) => {
+                reply.error(libc::ENOENT);
+            }
+        }
+    }
+
+    /// Read directory entries.
+    /// Port of C tup's tup_fs_readdir() (fuse_fs.c:588-724).
+    fn readdir(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        mut reply: ReplyDirectory,
+    ) {
+        let dir_path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let entries = match std::fs::read_dir(&dir_path) {
+            Ok(rd) => rd,
+            Err(_) => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let mut full_entries: Vec<(u64, FileType, String)> = Vec::new();
+        // Add . and ..
+        full_entries.push((ino, FileType::Directory, ".".to_string()));
+        if let Some(parent) = dir_path.parent() {
+            let parent_ino = self.get_or_create_inode(parent);
+            full_entries.push((parent_ino, FileType::Directory, "..".to_string()));
+        }
+
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let child_path = dir_path.join(&name);
+            let child_ino = self.get_or_create_inode(&child_path);
+            if let Ok(ft) = entry.file_type() {
+                let fuse_ft = if ft.is_dir() {
+                    FileType::Directory
+                } else if ft.is_symlink() {
+                    FileType::Symlink
+                } else {
+                    FileType::RegularFile
+                };
+                full_entries.push((child_ino, fuse_ft, name));
+            }
+        }
+
+        for (i, (entry_ino, ft, name)) in full_entries.iter().enumerate().skip(offset as usize) {
+            if reply.add(*entry_ino, (i + 1) as i64, *ft, name) {
+                break; // buffer full
+            }
+        }
+        reply.ok();
+    }
+
+    /// Open a file.
+    /// Port of C tup's tup_fs_open() (fuse_fs.c).
+    fn open(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
+        let path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        // Track the read access
+        let rel_path = path
+            .strip_prefix(&self.tup_top)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        if !Self::is_hidden(&rel_path) && !Self::should_ignore(&rel_path) {
+            // TODO: Record access in the job's FileInfo when FUSE is
+            // wired into the updater execution path (WP6)
+        }
+
+        // Return FH=0, let kernel handle the actual FD
+        reply.opened(0, 0);
+    }
+
+    /// Read data from a file.
+    /// Port of C tup's tup_fs_read() (fuse_fs.c).
+    fn read(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        size: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyData,
+    ) {
+        let path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        match std::fs::read(&path) {
+            Ok(data) => {
+                let start = offset as usize;
+                let end = std::cmp::min(start + size as usize, data.len());
+                if start < data.len() {
+                    reply.data(&data[start..end]);
+                } else {
+                    reply.data(&[]);
+                }
+            }
+            Err(_) => {
+                reply.error(libc::EIO);
+            }
+        }
+    }
+
+    /// Release (close) a file.
+    /// Port of C tup's tup_fs_release() (fuse_fs.c).
+    fn release(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        _fh: u64,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        _flush: bool,
+        reply: fuser::ReplyEmpty,
+    ) {
+        reply.ok();
+    }
+}
 
 #[cfg(test)]
 mod tests {
