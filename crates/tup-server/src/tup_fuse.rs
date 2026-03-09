@@ -386,7 +386,47 @@ impl Filesystem for TupFuseFs {
             }
         };
 
-        let child_path = parent_path.join(name);
+        let name_str = name.to_string_lossy();
+
+        // Handle @tupjob-N virtual directories.
+        // C: get_finfo() extracts job number from path prefix.
+        if name_str.starts_with(TUP_JOB) {
+            if let Some(job_id_str) = name_str.strip_prefix(TUP_JOB) {
+                if let Ok(_job_id) = job_id_str.parse::<i64>() {
+                    // Virtual job directory — maps to tup_top
+                    let ino = self.get_or_create_inode(&parent_path.join(name));
+                    let attr = FileAttr {
+                        ino,
+                        size: 0,
+                        blocks: 0,
+                        atime: SystemTime::now(),
+                        mtime: SystemTime::now(),
+                        ctime: SystemTime::now(),
+                        crtime: SystemTime::now(),
+                        kind: FileType::Directory,
+                        perm: 0o755,
+                        nlink: 2,
+                        uid: unsafe { libc::getuid() },
+                        gid: unsafe { libc::getgid() },
+                        rdev: 0,
+                        blksize: 4096,
+                        flags: 0,
+                    };
+                    reply.entry(&TTL, &attr, 0);
+                    return;
+                }
+            }
+        }
+
+        // For paths inside @tupjob-N, resolve to the real filesystem.
+        // The parent might be a virtual job dir — resolve to tup_top.
+        let child_path = if parent_path.to_string_lossy().contains(TUP_JOB) {
+            // We're inside a @tupjob-N dir — resolve relative to tup_top
+            self.tup_top.join(name)
+        } else {
+            parent_path.join(name)
+        };
+
         match std::fs::symlink_metadata(&child_path) {
             Ok(meta) => {
                 let ino = self.get_or_create_inode(&child_path);
