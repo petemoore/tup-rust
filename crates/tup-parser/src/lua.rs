@@ -65,6 +65,7 @@ pub fn parse_lua_tupfile(
                 line_number: 0,
                 had_inputs,
                 vars_snapshot: None,
+                bin: None,
             };
 
             rules_clone.lock().unwrap().push(rule);
@@ -157,6 +158,7 @@ pub fn parse_lua_tupfile(
                 line_number: 0,
                 had_inputs,
                 vars_snapshot: None,
+                bin: None,
             };
 
             rules_clone2.lock().unwrap().push(rule);
@@ -215,6 +217,7 @@ pub fn parse_lua_tupfile(
                 line_number: 0,
                 had_inputs,
                 vars_snapshot: None,
+                bin: None,
             };
 
             rules_clone3.lock().unwrap().push(rule);

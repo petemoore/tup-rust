@@ -27,6 +27,10 @@ pub struct Rule {
     /// these vars are used for the second-pass $(var) expansion.
     /// This matches C tup's do_rule() which calls tup_printf() then eval().
     pub vars_snapshot: Option<std::collections::BTreeMap<String, String>>,
+    /// Output bin name (e.g., `{objs}` in the output section).
+    /// Bins are runtime collections — outputs are accumulated and
+    /// can be referenced as inputs in later rules.
+    pub bin: Option<String>,
 }
 
 /// The command portion of a rule.
@@ -71,7 +75,7 @@ impl Rule {
 
         // Parse outputs (third section, and any remaining sections joined)
         let output_text = parts[2..].join("|>");
-        let (outputs, extra_outputs) = parse_output_section(output_text.trim());
+        let (outputs, extra_outputs, bin) = parse_output_section(output_text.trim());
 
         let had_inputs = !inputs.is_empty();
         Ok(Rule {
@@ -84,6 +88,7 @@ impl Rule {
             line_number,
             had_inputs,
             vars_snapshot: None,
+            bin,
         })
     }
 }
@@ -172,15 +177,30 @@ fn parse_command_section(text: &str) -> RuleCommand {
 
 /// Parse the output section of a rule.
 ///
-/// Extra outputs follow `|`.
-fn parse_output_section(text: &str) -> (Vec<String>, Vec<String>) {
-    if let Some(pipe_pos) = text.find(" | ") {
-        let outputs = split_words(&text[..pipe_pos]);
-        let extras = split_words(&text[pipe_pos + 3..]);
-        (outputs, extras)
+/// Extra outputs follow `|`. Bin references `{name}` are extracted.
+/// Returns (outputs, extra_outputs, bin).
+fn parse_output_section(text: &str) -> (Vec<String>, Vec<String>, Option<String>) {
+    let (main_text, extra_text) = if let Some(pipe_pos) = text.find(" | ") {
+        (&text[..pipe_pos], Some(&text[pipe_pos + 3..]))
     } else {
-        (split_words(text), vec![])
+        (text, None)
+    };
+
+    let mut outputs = Vec::new();
+    let mut bin = None;
+
+    for word in main_text.split_whitespace() {
+        if word.starts_with('{') && word.ends_with('}') && word.len() > 2 {
+            // This is a bin reference: {name}
+            bin = Some(word[1..word.len() - 1].to_string());
+        } else {
+            outputs.push(word.to_string());
+        }
     }
+
+    let extras = extra_text.map(split_words).unwrap_or_default();
+
+    (outputs, extras, bin)
 }
 
 /// Split a string into whitespace-separated words.
