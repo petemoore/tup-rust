@@ -46,8 +46,6 @@ pub struct Updater {
     commands_failed: usize,
     /// Total expected commands (set before execution for progress).
     total_expected: usize,
-    /// Whether to show error output inline.
-    show_errors: bool,
 }
 
 impl Updater {
@@ -59,7 +57,6 @@ impl Updater {
             commands_run: 0,
             commands_failed: 0,
             total_expected: 0,
-            show_errors: true,
         }
     }
 
@@ -196,22 +193,22 @@ impl Updater {
         let duration = start.elapsed();
         let success = output.status.success();
 
+        // Show command output (matches C tup behavior: output shown inline)
+        let stdout_text = String::from_utf8_lossy(&output.stdout);
+        let stderr_text = String::from_utf8_lossy(&output.stderr);
+        if !stdout_text.trim().is_empty() {
+            print!("{}", stdout_text);
+        }
+        if !stderr_text.trim().is_empty() {
+            eprint!("{}", stderr_text);
+        }
+
         if !success {
             self.commands_failed += 1;
-            if self.show_errors {
-                let stderr_text = String::from_utf8_lossy(&output.stderr);
-                let stdout_text = String::from_utf8_lossy(&output.stdout);
-                if !stderr_text.trim().is_empty() {
-                    eprintln!("{}", stderr_text.trim());
-                }
-                if !stdout_text.trim().is_empty() {
-                    eprintln!("{}", stdout_text.trim());
-                }
-                if let Some(code) = output.status.code() {
-                    eprintln!(" *** Command failed with exit code {code}");
-                } else {
-                    eprintln!(" *** Command was killed by signal");
-                }
+            if let Some(code) = output.status.code() {
+                eprintln!(" *** Command failed with exit code {code}");
+            } else {
+                eprintln!(" *** Command was killed by signal");
             }
         }
 
@@ -233,6 +230,31 @@ impl Updater {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string())
+    }
+
+    /// Execute pre-expanded rules where commands are already fully substituted.
+    ///
+    /// Unlike `execute_rules`, this does NOT call expand_percent on the commands.
+    /// Use this when rules have already been expanded by expand_rules_for_dir.
+    pub fn execute_expanded_rules(&mut self, rules: &[Rule]) -> Result<Vec<CommandResult>, String> {
+        self.total_expected = rules.len();
+        let mut all_results = Vec::new();
+
+        for rule in rules {
+            let result = self.execute_command(
+                &rule.command.command,
+                rule.command.display.as_deref(),
+                &rule.outputs,
+            )?;
+            let failed = !result.success;
+            all_results.push(result);
+
+            if failed && !self.keep_going {
+                break;
+            }
+        }
+
+        Ok(all_results)
     }
 
     /// Execute all rules from a parsed Tupfile.
@@ -427,44 +449,7 @@ impl Updater {
 
                             let duration = start.elapsed();
 
-                            let result = match output {
-                                Ok(o) => {
-                                    if !o.status.success() {
-                                        let stderr_text = String::from_utf8_lossy(&o.stderr);
-                                        let stdout_text = String::from_utf8_lossy(&o.stdout);
-                                        if !stderr_text.trim().is_empty() {
-                                            eprintln!("{}", stderr_text.trim());
-                                        }
-                                        if !stdout_text.trim().is_empty() {
-                                            eprintln!("{}", stdout_text.trim());
-                                        }
-                                        if let Some(code) = o.status.code() {
-                                            eprintln!(" *** Command failed with exit code {code}");
-                                        }
-                                    }
-                                    CommandResult {
-                                        command: ec.cmd.clone(),
-                                        display: ec.display.clone(),
-                                        success: o.status.success(),
-                                        exit_code: o.status.code(),
-                                        stdout: String::from_utf8_lossy(&o.stdout).to_string(),
-                                        stderr: String::from_utf8_lossy(&o.stderr).to_string(),
-                                        duration_ms: duration.as_millis() as u64,
-                                        expected_outputs: ec.outputs.clone(),
-                                    }
-                                }
-                                Err(e) => CommandResult {
-                                    command: ec.cmd.clone(),
-                                    display: ec.display.clone(),
-                                    success: false,
-                                    exit_code: None,
-                                    stdout: String::new(),
-                                    stderr: e.to_string(),
-                                    duration_ms: duration.as_millis() as u64,
-                                    expected_outputs: ec.outputs.clone(),
-                                },
-                            };
-
+                            let result = parallel_command_result(&output, ec, duration);
                             results.lock().unwrap().push((idx, result));
                         }
                     }));
@@ -491,6 +476,195 @@ impl Updater {
         }
 
         Ok(all_results)
+    }
+
+    /// Execute pre-expanded rules in parallel.
+    ///
+    /// Like `execute_rules_parallel` but skips all % expansion and glob
+    /// resolution since rules are already fully expanded by the caller.
+    pub fn execute_expanded_rules_parallel(
+        &mut self,
+        rules: &[Rule],
+        num_jobs: usize,
+    ) -> Result<Vec<CommandResult>, String> {
+        let num_jobs = num_jobs.max(1);
+
+        if num_jobs == 1 {
+            return self.execute_expanded_rules(rules);
+        }
+
+        // Convert rules directly to ExpandedCommands without expansion
+        let commands: Vec<ExpandedCommand> = rules.iter().map(|rule| {
+            ExpandedCommand {
+                cmd: rule.command.command.clone(),
+                display: rule.command.display.clone(),
+                inputs: rule.inputs.clone(),
+                outputs: rule.outputs.clone(),
+            }
+        }).collect();
+
+        self.execute_commands_parallel(commands, num_jobs)
+    }
+
+    /// Internal: execute a list of pre-expanded commands in parallel with dependency ordering.
+    fn execute_commands_parallel(
+        &mut self,
+        commands: Vec<ExpandedCommand>,
+        num_jobs: usize,
+    ) -> Result<Vec<CommandResult>, String> {
+        let total = commands.len();
+
+        // Map output name → index of command that produces it
+        let mut output_producers: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (idx, ec) in commands.iter().enumerate() {
+            for out in &ec.outputs {
+                output_producers.insert(out.clone(), idx);
+            }
+        }
+
+        // Compute dependencies
+        let mut deps: Vec<Vec<usize>> = vec![Vec::new(); total];
+        for (idx, ec) in commands.iter().enumerate() {
+            for inp in &ec.inputs {
+                if let Some(&producer) = output_producers.get(inp) {
+                    if producer != idx {
+                        deps[idx].push(producer);
+                    }
+                }
+            }
+        }
+
+        // Execute in waves
+        let mut done = vec![false; total];
+        let mut all_results = Vec::with_capacity(total);
+        self.total_expected = total;
+
+        while all_results.len() < total {
+            let ready: Vec<usize> = (0..total)
+                .filter(|&i| !done[i] && deps[i].iter().all(|&d| done[d]))
+                .collect();
+
+            if ready.is_empty() {
+                return Err("dependency cycle detected in rules".to_string());
+            }
+
+            let wave_commands: Vec<(usize, &ExpandedCommand)> =
+                ready.iter().map(|&i| (i, &commands[i])).collect();
+
+            let results = Arc::new(Mutex::new(Vec::new()));
+            let work_dir = self.work_dir.clone();
+            let counter = Arc::new(Mutex::new(self.commands_run));
+
+            std::thread::scope(|s| {
+                let mut handles = Vec::new();
+                let chunk_size = wave_commands.len().div_ceil(num_jobs);
+                let chunks: Vec<_> = wave_commands.chunks(chunk_size).collect();
+
+                for chunk in chunks {
+                    let results = Arc::clone(&results);
+                    let counter = Arc::clone(&counter);
+                    let work_dir = work_dir.clone();
+                    let chunk: Vec<_> = chunk.to_vec();
+
+                    handles.push(s.spawn(move || {
+                        for (idx, ec) in chunk {
+                            let mut num = counter.lock().unwrap();
+                            *num += 1;
+                            let n = *num;
+                            drop(num);
+
+                            if let Some(ref d) = ec.display {
+                                eprintln!(" [{n}/{total}] {d}");
+                            } else {
+                                eprintln!(" [{n}/{total}] {}", ec.cmd);
+                            }
+
+                            let shell = if cfg!(target_os = "windows") { "cmd" } else { "sh" };
+                            let flag = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+                            let start = Instant::now();
+
+                            let output = Command::new(shell)
+                                .arg(flag).arg(&ec.cmd)
+                                .current_dir(&work_dir)
+                                .stdout(Stdio::piped())
+                                .stderr(Stdio::piped())
+                                .output();
+
+                            let duration = start.elapsed();
+
+                            let result = parallel_command_result(&output, ec, duration);
+                            results.lock().unwrap().push((idx, result));
+                        }
+                    }));
+                }
+
+                for h in handles {
+                    h.join().unwrap();
+                }
+            });
+
+            let wave_results = Arc::try_unwrap(results).unwrap().into_inner().unwrap();
+            self.commands_run += wave_results.len();
+            let wave_failed = wave_results.iter().filter(|(_,r)| !r.success).count();
+            self.commands_failed += wave_failed;
+
+            for (idx, result) in wave_results {
+                done[idx] = true;
+                all_results.push(result);
+            }
+
+            if wave_failed > 0 && !self.keep_going {
+                break;
+            }
+        }
+
+        Ok(all_results)
+    }
+}
+
+/// Build a CommandResult from a parallel command execution, showing output inline.
+fn parallel_command_result(
+    output: &Result<std::process::Output, std::io::Error>,
+    ec: &ExpandedCommand,
+    duration: std::time::Duration,
+) -> CommandResult {
+    match output {
+        Ok(o) => {
+            let stdout_text = String::from_utf8_lossy(&o.stdout);
+            let stderr_text = String::from_utf8_lossy(&o.stderr);
+            if !stdout_text.trim().is_empty() {
+                print!("{}", stdout_text);
+            }
+            if !stderr_text.trim().is_empty() {
+                eprint!("{}", stderr_text);
+            }
+            if !o.status.success() {
+                if let Some(code) = o.status.code() {
+                    eprintln!(" *** Command failed with exit code {code}");
+                }
+            }
+            CommandResult {
+                command: ec.cmd.clone(),
+                display: ec.display.clone(),
+                success: o.status.success(),
+                exit_code: o.status.code(),
+                stdout: stdout_text.to_string(),
+                stderr: stderr_text.to_string(),
+                duration_ms: duration.as_millis() as u64,
+                expected_outputs: ec.outputs.clone(),
+            }
+        }
+        Err(e) => CommandResult {
+            command: ec.cmd.clone(),
+            display: ec.display.clone(),
+            success: false,
+            exit_code: None,
+            stdout: String::new(),
+            stderr: e.to_string(),
+            duration_ms: duration.as_millis() as u64,
+            expected_outputs: ec.outputs.clone(),
+        },
     }
 }
 
