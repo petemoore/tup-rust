@@ -282,45 +282,85 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     if !tupfiles.is_empty() {
         db.begin()?;
 
-        let mut total_stored = 0usize;
+        let mut total_stored;
 
-        for tupfile_rel in &tupfiles {
-            let tupfile_path = tup_root.join(tupfile_rel);
-            let tupfile_dir = tupfile_path.parent().unwrap_or(&tup_root);
-            let filename = tupfile_rel.to_string_lossy();
+        // Parse, store rules, and delete stale outputs
+        let parse_and_store =
+            |tupfiles: &[PathBuf],
+             db: &tup_db::TupDb,
+             cache: &mut tup_db::EntryCache,
+             tup_root: &Path,
+             config: &std::collections::BTreeMap<String, String>,
+             gitignore_dirs: &mut std::collections::HashMap<PathBuf, Vec<String>>|
+             -> anyhow::Result<(usize, bool)> {
+                let mut total = 0;
+                let mut any_stale = false;
+                for tupfile_rel in tupfiles {
+                    let tupfile_path = tup_root.join(tupfile_rel);
+                    let tupfile_dir = tupfile_path.parent().unwrap_or(tup_root);
+                    let filename = tupfile_rel.to_string_lossy();
 
-            let parse_result =
-                parse_tupfile_any(&tupfile_path, tupfile_dir, &tup_root, &filename, &config)?;
-            let rules = parse_result.rules;
-            let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
+                    let parse_result =
+                        parse_tupfile_any(&tupfile_path, tupfile_dir, tup_root, &filename, config)?;
+                    let rules = parse_result.rules;
+                    let expanded = expand_rules_for_dir(&rules, tupfile_dir)?;
 
-            if parse_result.gitignore {
-                let outputs: Vec<String> = expanded
-                    .iter()
-                    .flat_map(|r| r.outputs.iter().cloned())
-                    .collect();
-                gitignore_dirs.insert(tupfile_dir.to_path_buf(), outputs);
-            }
+                    if parse_result.gitignore {
+                        let outputs: Vec<String> = expanded
+                            .iter()
+                            .flat_map(|r| r.outputs.iter().cloned())
+                            .collect();
+                        gitignore_dirs.insert(tupfile_dir.to_path_buf(), outputs);
+                    }
 
-            // Find the dir_id for this directory
-            let dir_rel = tupfile_dir.strip_prefix(&tup_root).unwrap_or(Path::new(""));
-            let dir_id = resolve_dir_id(&db, dir_rel)?;
+                    let dir_rel = tupfile_dir.strip_prefix(tup_root).unwrap_or(Path::new(""));
+                    let dir_id = resolve_dir_id(db, dir_rel)?;
 
-            // Convert expanded rules to RuleToStore
-            let rules_to_store: Vec<tup_db::RuleToStore> = expanded
-                .iter()
-                .map(|r| tup_db::RuleToStore {
-                    command: r.command.command.clone(),
-                    inputs: r.inputs.clone(),
-                    order_only_inputs: r.order_only_inputs.clone(),
-                    outputs: r.outputs.clone(),
-                    display: r.command.display.clone(),
-                    flags: r.command.flags.clone(),
-                })
-                .collect();
+                    let rules_to_store: Vec<tup_db::RuleToStore> = expanded
+                        .iter()
+                        .map(|r| tup_db::RuleToStore {
+                            command: r.command.command.clone(),
+                            inputs: r.inputs.clone(),
+                            order_only_inputs: r.order_only_inputs.clone(),
+                            outputs: r.outputs.clone(),
+                            display: r.command.display.clone(),
+                            flags: r.command.flags.clone(),
+                        })
+                        .collect();
 
-            let stored = tup_db::store_rules(&db, &mut cache, dir_id, &rules_to_store)?;
-            total_stored += stored.len();
+                    let store_result = tup_db::store_rules(db, cache, dir_id, &rules_to_store)?;
+                    total += store_result.commands.len();
+                    for stale in &store_result.stale_outputs {
+                        let stale_path = tupfile_dir.join(stale);
+                        let _ = std::fs::remove_file(&stale_path);
+                        any_stale = true;
+                    }
+                }
+                Ok((total, any_stale))
+            };
+
+        let (stored, stale) = parse_and_store(
+            &tupfiles,
+            &db,
+            &mut cache,
+            &tup_root,
+            &config,
+            &mut gitignore_dirs,
+        )?;
+        total_stored = stored;
+        let had_stale_outputs = stale;
+
+        // If stale outputs were deleted, re-parse to get correct glob results
+        if had_stale_outputs {
+            let (stored2, _) = parse_and_store(
+                &tupfiles,
+                &db,
+                &mut cache,
+                &tup_root,
+                &config,
+                &mut gitignore_dirs,
+            )?;
+            total_stored = stored2;
         }
 
         db.commit()?;
@@ -755,8 +795,13 @@ fn cmd_parse() -> anyhow::Result<()> {
             })
             .collect();
 
-        let stored = tup_db::store_rules(&db, &mut cache, dir_id, &rules_to_store)?;
-        total_stored += stored.len();
+        let store_result = tup_db::store_rules(&db, &mut cache, dir_id, &rules_to_store)?;
+        total_stored += store_result.commands.len();
+        // Delete stale output files from disk
+        for stale in &store_result.stale_outputs {
+            let stale_path = tupfile_dir.join(stale);
+            let _ = std::fs::remove_file(&stale_path);
+        }
     }
 
     // Clear all remaining flag lists

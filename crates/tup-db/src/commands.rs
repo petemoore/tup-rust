@@ -48,8 +48,9 @@ pub fn store_rules(
     cache: &mut EntryCache,
     dir_id: TupId,
     rules: &[RuleToStore],
-) -> DbResult<Vec<StoredCommand>> {
+) -> DbResult<StoreResult> {
     let mut stored = Vec::new();
+    let mut stale_outputs = Vec::new();
 
     for rule in rules {
         let RuleToStore {
@@ -185,18 +186,39 @@ pub fn store_rules(
     // Clean up stale commands: remove CMD nodes in this directory that
     // were not produced by the current parse. This handles the case where
     // a Tupfile changes and old commands should be deleted.
+    // Also collects stale output files for disk deletion by the caller.
     let active_cmd_ids: std::collections::HashSet<TupId> =
         stored.iter().map(|s| s.cmd_id).collect();
     let existing_nodes = db.node_select_dir(dir_id)?;
     for row in existing_nodes {
         if row.node_type == NodeType::Cmd && !active_cmd_ids.contains(&row.id) {
-            // Stale command — remove its links and the node itself
+            // Stale command — find and remove its generated outputs too
+            let output_nodes = db.node_select_dir(dir_id)?;
+            for output in &output_nodes {
+                if output.node_type == NodeType::Generated && output.srcid == row.id.raw() {
+                    // Track for disk deletion
+                    stale_outputs.push(output.name.clone());
+                    db.link_delete_all(output.id)?;
+                    db.node_delete(output.id)?;
+                }
+            }
+            // Remove the command node and its links
             db.link_delete_all(row.id)?;
             db.node_delete(row.id)?;
         }
     }
 
-    Ok(stored)
+    Ok(StoreResult {
+        commands: stored,
+        stale_outputs,
+    })
+}
+
+/// Result of storing rules, including stale outputs to delete.
+pub struct StoreResult {
+    pub commands: Vec<StoredCommand>,
+    /// Output files from removed commands that should be deleted from disk.
+    pub stale_outputs: Vec<String>,
 }
 
 /// Get all commands in the modify list (need re-execution).
@@ -269,15 +291,20 @@ mod tests {
         }];
 
         let stored = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
-        assert_eq!(stored.len(), 1);
+        assert_eq!(stored.commands.len(), 1);
 
         // CMD should exist in DB
-        let cmd = db.node_select_by_id(stored[0].cmd_id).unwrap().unwrap();
+        let cmd = db
+            .node_select_by_id(stored.commands[0].cmd_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(cmd.node_type, NodeType::Cmd);
         assert_eq!(cmd.display, Some("CC main.c".to_string()));
 
         // CMD should be in modify list
-        assert!(db.flag_check(stored[0].cmd_id, TupFlags::Modify).unwrap());
+        assert!(db
+            .flag_check(stored.commands[0].cmd_id, TupFlags::Modify)
+            .unwrap());
 
         // Output should exist as Generated
         let output = db
@@ -293,7 +320,7 @@ mod tests {
                     .unwrap()
                     .unwrap()
                     .id,
-                stored[0].cmd_id,
+                stored.commands[0].cmd_id,
                 LinkType::Sticky,
             )
             .unwrap());
@@ -317,12 +344,14 @@ mod tests {
 
         let stored1 = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
         // Clear modify flag
-        mark_command_done(&db, stored1[0].cmd_id).unwrap();
+        mark_command_done(&db, stored1.commands[0].cmd_id).unwrap();
 
         // Store same rule again — should not re-flag
         let stored2 = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
-        assert_eq!(stored1[0].cmd_id, stored2[0].cmd_id);
-        assert!(!db.flag_check(stored2[0].cmd_id, TupFlags::Modify).unwrap());
+        assert_eq!(stored1.commands[0].cmd_id, stored2.commands[0].cmd_id);
+        assert!(!db
+            .flag_check(stored2.commands[0].cmd_id, TupFlags::Modify)
+            .unwrap());
 
         db.commit().unwrap();
     }
@@ -341,7 +370,7 @@ mod tests {
             flags: None,
         }];
         let stored1 = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules1).unwrap();
-        mark_command_done(&db, stored1[0].cmd_id).unwrap();
+        mark_command_done(&db, stored1.commands[0].cmd_id).unwrap();
 
         // Change display string
         let rules2 = vec![RuleToStore {
@@ -355,7 +384,9 @@ mod tests {
         let stored2 = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules2).unwrap();
 
         // Should be re-flagged due to display change
-        assert!(db.flag_check(stored2[0].cmd_id, TupFlags::Modify).unwrap());
+        assert!(db
+            .flag_check(stored2.commands[0].cmd_id, TupFlags::Modify)
+            .unwrap());
 
         db.commit().unwrap();
     }
@@ -406,9 +437,13 @@ mod tests {
         }];
         let stored = store_rules(&db, &mut cache, tup_types::DOT_DT, &rules).unwrap();
 
-        assert!(db.flag_check(stored[0].cmd_id, TupFlags::Modify).unwrap());
-        mark_command_done(&db, stored[0].cmd_id).unwrap();
-        assert!(!db.flag_check(stored[0].cmd_id, TupFlags::Modify).unwrap());
+        assert!(db
+            .flag_check(stored.commands[0].cmd_id, TupFlags::Modify)
+            .unwrap());
+        mark_command_done(&db, stored.commands[0].cmd_id).unwrap();
+        assert!(!db
+            .flag_check(stored.commands[0].cmd_id, TupFlags::Modify)
+            .unwrap());
 
         db.commit().unwrap();
     }
