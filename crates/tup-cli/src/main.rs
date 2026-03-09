@@ -257,9 +257,19 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         }
     }
 
-    // Load config variables from tup.config
+    // Load config variables from tup.config and detect changes
     let config = load_config_vars(&tup_root);
     write_vardict(&tup_root, &config);
+
+    // Detect tup.config changes by comparing content hash
+    let config_content = std::fs::read_to_string(tup_root.join("tup.config")).unwrap_or_default();
+    let config_hash = simple_hash(&config_content);
+    let old_config_hash = db.config_get_string("config_hash", "")?;
+    let config_changed = config_hash != old_config_hash;
+    if config_changed && !old_config_hash.is_empty() {
+        eprintln!("[ tup ] Configuration changed, re-parsing all Tupfiles.");
+    }
+    db.config_set_string("config_hash", &config_hash)?;
 
     // Phase 2: Parse Tupfiles and store commands in database
     let tupfiles =
@@ -1165,6 +1175,15 @@ fn simple_glob_recursive(pattern: &[char], pi: usize, text: &[char], ti: usize) 
 struct ParseResult {
     rules: Vec<tup_parser::Rule>,
     gitignore: bool,
+}
+
+/// Simple string hash for change detection.
+fn simple_hash(s: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Load config variables from tup.config file.

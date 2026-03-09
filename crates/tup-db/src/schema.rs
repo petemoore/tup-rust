@@ -176,6 +176,29 @@ impl TupDb {
         }
     }
 
+    /// Set a config value (string).
+    pub fn config_set_string(&self, key: &str, value: &str) -> DbResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO config VALUES(?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Get a config value (string), returning default if not found.
+    pub fn config_get_string(&self, key: &str, default: &str) -> DbResult<String> {
+        let result = self.conn.query_row(
+            "SELECT rval FROM config WHERE lval=?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(val) => Ok(val),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(default.to_string()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     // -- Node operations --
 
     /// Insert a node into the database.
