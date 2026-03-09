@@ -335,6 +335,7 @@ impl TupfileReader {
             outputs: expand_and_split(&self.vars, &rule.outputs),
             extra_outputs: expand_and_split(&self.vars, &rule.extra_outputs),
             line_number: rule.line_number,
+            had_inputs: rule.had_inputs,
         }
     }
 
