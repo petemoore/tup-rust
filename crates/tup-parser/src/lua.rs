@@ -289,6 +289,22 @@ pub fn parse_lua_tupfile(
         .map_err(lua_err)?;
     tup_table.set("include", include_fn).map_err(lua_err)?;
 
+    // tup.import(varname) — import an environment variable as a Lua global
+    let import_fn = lua
+        .create_function(|lua_ctx, name: String| {
+            match std::env::var(&name) {
+                Ok(val) => {
+                    lua_ctx.globals().set(name, val)?;
+                }
+                Err(_) => {
+                    lua_ctx.globals().set(name, mlua::Value::Nil)?;
+                }
+            }
+            Ok(())
+        })
+        .map_err(lua_err)?;
+    tup_table.set("import", import_fn).map_err(lua_err)?;
+
     // tup.export(varname)
     let export_fn = lua
         .create_function(|_, _name: String| Ok(()))
