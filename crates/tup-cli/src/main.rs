@@ -268,7 +268,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             || sync_result.files_modified > 0
             || sync_result.files_deleted > 0
         {
-            eprintln!(
+            println!(
                 "[ tup ] Scan: {} new, {} modified, {} deleted",
                 sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
             );
@@ -285,7 +285,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     let old_config_hash = db.config_get_string("config_hash", "")?;
     let config_changed = config_hash != old_config_hash;
     if config_changed && !old_config_hash.is_empty() {
-        eprintln!("[ tup ] Configuration changed, re-parsing all Tupfiles.");
+        println!("[ tup ] Configuration changed, re-parsing all Tupfiles.");
     }
     db.config_set_string("config_hash", &config_hash)?;
 
@@ -385,7 +385,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         db.commit()?;
 
         if total_stored > 0 {
-            eprintln!(
+            println!(
                 "[ tup ] Stored {} command(s) from {} Tupfile(s).",
                 total_stored,
                 tupfiles.len()
@@ -420,7 +420,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             .unwrap_or(1)
     });
 
-    eprintln!("[ tup ] {} command(s) to execute.", modified_cmds.len());
+    println!("[ tup ] {} command(s) to execute.", modified_cmds.len());
 
     // Build list of commands to execute from the DB modify_list.
     // Each command is already stored with its full command string.
@@ -556,7 +556,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
 
     // Summary
     if total_failed > 0 {
-        eprintln!("[ tup ] {total_failed} command(s) failed out of {total_run}.");
+        println!("[ tup ] {total_failed} command(s) failed out of {total_run}.");
         process::exit(1);
     } else {
         println!("[ tup ] Updated. {total_run} command(s) ran successfully.");
@@ -811,7 +811,7 @@ fn cmd_parse() -> anyhow::Result<()> {
         || sync_result.files_modified > 0
         || sync_result.files_deleted > 0
     {
-        eprintln!(
+        println!(
             "[ tup ] Scan: {} new, {} modified, {} deleted",
             sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
         );
@@ -870,7 +870,7 @@ fn cmd_parse() -> anyhow::Result<()> {
     db.commit()?;
 
     if total_stored > 0 {
-        eprintln!(
+        println!(
             "[ tup ] Stored {} command(s) from {} Tupfile(s).",
             total_stored,
             tupfiles.len()
@@ -890,7 +890,7 @@ fn cmd_scan() -> anyhow::Result<()> {
     let mut cache = tup_db::EntryCache::new();
     let sync_result = tup_db::sync_filesystem(&db, &mut cache, &tup_root)?;
 
-    eprintln!(
+    println!(
         "[ tup ] Scan: {} new, {} modified, {} deleted",
         sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
     );
@@ -1426,7 +1426,7 @@ fn cmd_read() -> anyhow::Result<()> {
         || sync_result.files_modified > 0
         || sync_result.files_deleted > 0
     {
-        eprintln!(
+        println!(
             "[ tup ] Scan: {} new, {} modified, {} deleted",
             sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
         );

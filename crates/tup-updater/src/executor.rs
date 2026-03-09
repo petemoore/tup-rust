@@ -170,9 +170,9 @@ impl Updater {
             self.commands_run
         };
         if let Some(disp) = display {
-            eprintln!(" [{}/{}] {}", self.commands_run, total, disp);
+            println!(" [{}/{}] {}", self.commands_run, total, disp);
         } else {
-            eprintln!(" [{}/{}] {}", self.commands_run, total, cmd);
+            println!(" [{}/{}] {}", self.commands_run, total, cmd);
         }
 
         let start = Instant::now();
@@ -453,9 +453,9 @@ impl Updater {
                             drop(num);
 
                             if let Some(ref d) = ec.display {
-                                eprintln!(" [{n}/{total}] {d}");
+                                println!(" [{n}/{total}] {d}");
                             } else {
-                                eprintln!(" [{n}/{total}] {}", ec.cmd);
+                                println!(" [{n}/{total}] {}", ec.cmd);
                             }
 
                             let shell = if cfg!(target_os = "windows") {
@@ -607,9 +607,9 @@ impl Updater {
                             drop(num);
 
                             if let Some(ref d) = ec.display {
-                                eprintln!(" [{n}/{total}] {d}");
+                                println!(" [{n}/{total}] {d}");
                             } else {
-                                eprintln!(" [{n}/{total}] {}", ec.cmd);
+                                println!(" [{n}/{total}] {}", ec.cmd);
                             }
 
                             let shell = if cfg!(target_os = "windows") {
