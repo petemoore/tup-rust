@@ -30,6 +30,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  compat-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build
+      - name: Run C compat tests (init + basic commands)
+        run: ./tests/compat/run_tests.sh t000 t100
+
   # Windows build (enabled once Windows support is added)
   # build-windows:
   #   runs-on: windows-latest
