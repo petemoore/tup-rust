@@ -122,6 +122,8 @@ enum Commands {
         /// Output file (use - for stdout)
         output: String,
     },
+    /// Read tup.config and store config variables in the database
+    Read,
 }
 
 fn main() {
@@ -186,6 +188,7 @@ fn main() {
             input,
             output,
         }) => cmd_varsed_cli(&input, &output, binary),
+        Some(Commands::Read) => cmd_read(),
         Some(_) => {
             eprintln!("Command not yet implemented");
             Ok(())
@@ -1398,6 +1401,111 @@ fn parse_tupfile_any(
         let gitignore = reader.gitignore_requested();
         Ok(ParseResult { rules, gitignore })
     }
+}
+
+/// Read tup.config and sync config variables to the database.
+///
+/// Ported from C tup: main.c calls updater(argc, argv, 1) which does
+/// scan + process_config_nodes (updater.c:195-198). process_config_nodes
+/// calls tup_db_read_vars (db.c:5003) which:
+/// 1. Gets existing VAR nodes from DB under the tup.config entry
+/// 2. Reads tup.config from filesystem (get_file_var_tree, db.c:7672)
+/// 3. Compares and syncs: removes old vars, adds new, updates changed
+/// 4. Writes vardict file
+fn cmd_read() -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    let tup_root = tup_platform::init::find_tup_dir(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("No .tup directory found. Run 'tup init' first."))?;
+
+    let db = tup_db::TupDb::open(&tup_root, false)?;
+    let mut cache = tup_db::EntryCache::new();
+
+    // Phase 1: Scan filesystem (same as C tup's run_scan in updater.c:192)
+    let sync_result = tup_db::sync_filesystem(&db, &mut cache, &tup_root)?;
+    if sync_result.files_added > 0
+        || sync_result.files_modified > 0
+        || sync_result.files_deleted > 0
+    {
+        eprintln!(
+            "[ tup ] Scan: {} new, {} modified, {} deleted",
+            sync_result.files_added, sync_result.files_modified, sync_result.files_deleted,
+        );
+    }
+
+    // Phase 2: Read config vars from tup.config file
+    let config = load_config_vars(&tup_root);
+
+    // Phase 3: Sync config vars to DB as VAR nodes under a "tup.config" directory node.
+    //
+    // In C tup, the tup.config FILE node's tupid is used as the parent dir
+    // for VAR nodes. We replicate this: ensure "tup.config" exists as a node
+    // in the root directory, then create VAR children under it.
+    db.begin()?;
+
+    // Get or create the tup.config node in the root dir (DOT_DT).
+    // In C, this node is the tup.config file entry itself. Its tupid becomes
+    // the dir for VAR nodes.
+    let vartent_id = match db.node_select(DOT_DT, "tup.config")? {
+        Some(row) => row.id,
+        None => {
+            // Create it as a File node (matches C: tup.config is a file in the fs)
+            let result =
+                db.create_node(&mut cache, DOT_DT, "tup.config", NodeType::File, -1, 0, 0)?;
+            match result {
+                tup_db::CreateResult::Created(id) => id,
+                tup_db::CreateResult::Existing(id) => id,
+            }
+        }
+    };
+
+    // Get existing VAR nodes from DB (C: tup_db_get_vardb, db.c:7605)
+    // Query: select node.id, name, value, type from node, var where dir=vartent_id and node.id=var.id
+    let existing_nodes = db.node_select_dir(vartent_id)?;
+    let mut db_vars: std::collections::BTreeMap<String, (TupId, Option<String>)> =
+        std::collections::BTreeMap::new();
+    for node in &existing_nodes {
+        let value = db.var_get(node.id)?;
+        db_vars.insert(node.name.clone(), (node.id, value));
+    }
+
+    // Compare and sync (C: vardb_compare with remove_var, add_var, compare_vars callbacks)
+
+    // Remove vars that are in DB but not in file (C: remove_var, db.c:4966)
+    for (name, (id, _value)) in &db_vars {
+        if !config.contains_key(name.as_str()) {
+            // C: remove_var_tupid → delete from var, delete from node
+            db.var_delete(*id)?;
+            db.node_delete(*id)?;
+        }
+    }
+
+    // Add or update vars from file (C: add_var db.c:4973, compare_vars db.c:4985)
+    for (name, value) in &config {
+        match db_vars.get(name.as_str()) {
+            None => {
+                // New var — create node + var entry (C: add_var → tup_db_create_node + tup_db_set_var)
+                let id = db.node_insert(vartent_id, name, NodeType::Var, 0, 0, -1, None, None)?;
+                db.var_set(id, value)?;
+            }
+            Some((_id, existing_value)) => {
+                // Existing var — update if changed (C: compare_vars)
+                let needs_update = match existing_value {
+                    Some(v) => v != value,
+                    None => true,
+                };
+                if needs_update {
+                    db.var_set(*_id, value)?;
+                }
+            }
+        }
+    }
+
+    db.commit()?;
+
+    // Write vardict file (C: save_vardict_file)
+    write_vardict(&tup_root, &config);
+
+    Ok(())
 }
 
 fn cmd_version() {
