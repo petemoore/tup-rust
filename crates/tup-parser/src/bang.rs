@@ -130,6 +130,7 @@ impl BangDb {
             rule_outputs.to_vec()
         };
 
+        let had_inputs = !inputs.is_empty();
         Ok(Rule {
             foreach: mac.foreach,
             inputs,
@@ -142,6 +143,7 @@ impl BangDb {
             outputs,
             extra_outputs: mac.extra_outputs.clone(),
             line_number,
+            had_inputs,
         })
     }
 

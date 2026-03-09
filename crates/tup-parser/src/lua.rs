@@ -46,6 +46,7 @@ pub fn parse_lua_tupfile(
 
         let foreach: bool = table.get::<_, bool>("foreach").unwrap_or(false);
 
+        let had_inputs = !inputs.is_empty();
         let rule = Rule {
             foreach,
             inputs,
@@ -58,6 +59,7 @@ pub fn parse_lua_tupfile(
             outputs: outputs.clone(),
             extra_outputs,
             line_number: 0,
+            had_inputs,
         };
 
         rules_clone.lock().unwrap().push(rule);
@@ -85,6 +87,7 @@ pub fn parse_lua_tupfile(
             .map(|t| table_to_vec(&t))
             .unwrap_or_default();
 
+        let had_inputs = !inputs.is_empty();
         let rule = Rule {
             foreach: false,
             inputs,
@@ -97,6 +100,7 @@ pub fn parse_lua_tupfile(
             outputs,
             extra_outputs: vec![],
             line_number: 0,
+            had_inputs,
         };
 
         rules_clone2.lock().unwrap().push(rule);

@@ -686,6 +686,13 @@ fn expand_rules_for_dir(
         .unwrap_or_else(|| ".".to_string());
 
     for rule in rules {
+        // Skip rules where inputs came from variables that expanded to empty.
+        // Matches C tup: `: $(empty_var) |> cmd |>` produces no command,
+        // but `: |> cmd |>` (explicitly empty) does.
+        if rule.had_inputs && rule.inputs.is_empty() {
+            continue;
+        }
+
         // Expand input globs against filesystem + declared outputs
         let matched_inputs = expand_globs_with_declared(
             &rule.inputs, work_dir, &declared_outputs,
@@ -704,6 +711,39 @@ fn expand_rules_for_dir(
                     ));
                 }
             }
+        }
+
+        // Check order-only inputs too
+        for oo_input in &rule.order_only_inputs {
+            if !tup_parser::is_glob(oo_input) && !oo_input.is_empty() {
+                let on_disk = work_dir.join(oo_input).exists();
+                let in_declared = declared_outputs.contains(oo_input);
+                if !on_disk && !in_declared {
+                    return Err(anyhow::anyhow!(
+                        "tup error: Explicitly named file '{}' not found",
+                        oo_input
+                    ));
+                }
+            }
+        }
+
+        // Check for %f/%b/%B usage with no inputs, and %i with no order-only inputs
+        // Matches C tup parser.c error messages
+        if matched_inputs.is_empty() && !rule.had_inputs {
+            let cmd = &rule.command.command;
+            for (pat, desc) in [("%f", "%f"), ("%b", "%b"), ("%B", "%B")] {
+                if cmd.contains(pat) {
+                    return Err(anyhow::anyhow!(
+                        "tup error: {} used in rule pattern and no input files were specified",
+                        desc
+                    ));
+                }
+            }
+        }
+        if rule.order_only_inputs.is_empty() && rule.command.command.contains("%i") {
+            return Err(anyhow::anyhow!(
+                "tup error: %i used in rule pattern and no order-only input files were specified"
+            ));
         }
 
         if rule.foreach {
@@ -747,6 +787,7 @@ fn expand_rules_for_dir(
                     outputs,
                     extra_outputs: rule.extra_outputs.clone(),
                     line_number: rule.line_number,
+                    had_inputs: true,
                 });
             }
         } else {
@@ -799,6 +840,7 @@ fn expand_rules_for_dir(
                 outputs,
                 extra_outputs: rule.extra_outputs.clone(),
                 line_number: rule.line_number,
+                had_inputs: rule.had_inputs,
             });
         }
     }

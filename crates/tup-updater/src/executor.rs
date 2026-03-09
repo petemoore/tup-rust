@@ -511,6 +511,7 @@ mod tests {
             outputs: outputs.iter().map(|s| s.to_string()).collect(),
             extra_outputs: vec![],
             line_number: 1,
+            had_inputs: !inputs.is_empty(),
         }
     }
 
@@ -527,6 +528,7 @@ mod tests {
             outputs: vec![output_pattern.to_string()],
             extra_outputs: vec![],
             line_number: 1,
+            had_inputs: !inputs.is_empty(),
         }
     }
 
@@ -718,6 +720,7 @@ mod tests {
             outputs: vec![],
             extra_outputs: vec![],
             line_number: 1,
+            had_inputs: false,
         };
 
         let results = updater.execute_rule(&rule).unwrap();

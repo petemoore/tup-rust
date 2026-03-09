@@ -48,9 +48,21 @@ impl ParseVarDb {
 
         while let Some(ch) = chars.next() {
             if ch == '\\' && chars.peek() == Some(&'$') {
-                // Escaped dollar sign: \$ → literal $
-                chars.next(); // consume '$'
-                result.push('$');
+                // Check if this is \$( — escaped variable reference.
+                // In C tup, \$( prevents variable expansion but the \$ is
+                // kept in the output (the command string).
+                // Plain \$ (not followed by '(') is also preserved as-is.
+                let mut lookahead = chars.clone();
+                lookahead.next(); // skip '$'
+                if lookahead.peek() == Some(&'(') {
+                    // \$( → $( in output (skip the backslash, don't expand)
+                    chars.next(); // consume '$'
+                    result.push('$');
+                } else {
+                    // \$ not followed by ( — preserve both characters
+                    result.push('\\');
+                    // Don't consume the '$' — it will be processed next iteration
+                }
             } else if ch == '$' && chars.peek() == Some(&'(') {
                 chars.next(); // consume '('
                 let mut var_name = String::new();

@@ -17,6 +17,11 @@ pub struct Rule {
     pub extra_outputs: Vec<String>,
     /// Line number in the Tupfile.
     pub line_number: usize,
+    /// Whether the rule originally had inputs (pre-expansion).
+    /// When true and inputs expand to empty, the rule should be skipped.
+    /// Matches C tup behavior: `$(empty_var) |> cmd |>` is skipped,
+    /// but `: |> cmd |>` runs.
+    pub had_inputs: bool,
 }
 
 /// The command portion of a rule.
@@ -60,6 +65,7 @@ impl Rule {
         let output_text = parts[2..].join("|>");
         let (outputs, extra_outputs) = parse_output_section(output_text.trim());
 
+        let had_inputs = !inputs.is_empty();
         Ok(Rule {
             foreach,
             inputs,
@@ -68,6 +74,7 @@ impl Rule {
             outputs,
             extra_outputs,
             line_number,
+            had_inputs,
         })
     }
 }
@@ -80,6 +87,11 @@ fn parse_input_section(text: &str) -> (Vec<String>, Vec<String>) {
         let inputs = split_words(&text[..pipe_pos]);
         let oo_inputs = split_words(&text[pipe_pos + 3..]);
         (inputs, oo_inputs)
+    } else if let Some(rest) = text.strip_prefix("| ") {
+        // No regular inputs, only order-only: `| order.h`
+        (vec![], split_words(rest))
+    } else if text == "|" {
+        (vec![], vec![])
     } else if let Some(stripped) = text.strip_suffix(" |") {
         let inputs = split_words(stripped);
         (inputs, vec![])
