@@ -4,20 +4,19 @@
 # Usage:
 #   ./tests/compat/run_tests.sh              # Run default test set (t0000-t1009)
 #   ./tests/compat/run_tests.sh t0000-init   # Run a specific test
-#   ./tests/compat/run_tests.sh t0*.sh       # Run tests matching a pattern
+#   ./tests/compat/run_tests.sh t200 t201    # Run tests matching prefix ranges
 #
-# Prerequisites:
-#   - C tup test suite at ~/git/tup/test/
-#   - Rust binary built via `cargo build`
+# The test scripts are in tests/compat/tests/ (copied from C tup).
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-C_TEST_DIR="$HOME/git/tup/test"
+C_TEST_DIR="$SCRIPT_DIR/tests"
 
 if [ ! -d "$C_TEST_DIR" ]; then
-    echo "Error: C tup test suite not found at $C_TEST_DIR" >&2
+    echo "Error: Test scripts not found at $C_TEST_DIR" >&2
+    echo "Run: cp ~/git/tup/test/*.sh $C_TEST_DIR/" >&2
     exit 1
 fi
 
