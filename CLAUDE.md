@@ -16,12 +16,13 @@ The original C source is at `~/git/tup/`.
 ## How to Work on This Project
 
 1. **Check PARITY_PLAN.md** for the current focus area
-2. **Read the relevant `C_ANALYSIS/*.md`** file for the spec
-3. **Implement in the correct crate** per ARCHITECTURE.md
+2. **Find the C function** in `~/git/tup/src/tup/` that implements the feature
+3. **Read the C code** line by line, then port the logic to Rust
 4. **Write tests** — every PR must have tests
 5. **Run `cargo build && cargo test && cargo clippy && cargo fmt --all`** before creating a PR
-6. **Create PR** on `petemoore/tup-rust` via `gh pr create`
-7. **Continue working autonomously** — don't stop to ask questions, make reasonable decisions and keep going. The goal is complete feature parity with the C implementation.
+6. **Never use `git commit --no-verify`** — fix underlying issues instead of bypassing hooks
+7. **Create PR** on `petemoore/tup-rust` via `gh pr create`
+8. **Continue working autonomously** — don't stop to ask questions, make reasonable decisions and keep going. The goal is complete feature parity with the C implementation.
 
 ## CRITICAL: Port from C, Don't Invent
 
