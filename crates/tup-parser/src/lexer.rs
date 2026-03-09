@@ -248,12 +248,14 @@ impl TupfileReader {
 
                     match &parsed.content {
                         TupfileLine::VarAssign { name, value } => {
+                            let expanded_name = self.vars.expand(name);
                             let expanded = self.vars.expand(value);
-                            self.vars.set(name, &expanded);
+                            self.vars.set(&expanded_name, &expanded);
                         }
                         TupfileLine::VarAppend { name, value } => {
+                            let expanded_name = self.vars.expand(name);
                             let expanded = self.vars.expand(value);
-                            self.vars.append(name, &expanded);
+                            self.vars.append(&expanded_name, &expanded);
                         }
                         TupfileLine::BangDef { name, definition } => {
                             let expanded_def = self.vars.expand(definition);
