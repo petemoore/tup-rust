@@ -556,6 +556,334 @@ impl Filesystem for TupFuseFs {
     ) {
         reply.ok();
     }
+
+    /// Write data to a file.
+    /// Port of C tup's tup_fs_write() (fuse_fs.c).
+    /// Writes go to the mapped temporary file, not the real output.
+    fn write(
+        &mut self,
+        _req: &Request<'_>,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        data: &[u8],
+        _write_flags: u32,
+        _flags: i32,
+        _lock_owner: Option<u64>,
+        reply: ReplyWrite,
+    ) {
+        let path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        // TODO: When wired to updater (WP6), write to mapped tmpname
+        // For now, write to the real file
+        use std::io::Write;
+        match std::fs::OpenOptions::new().write(true).open(&path) {
+            Ok(mut f) => {
+                use std::io::Seek;
+                if f.seek(std::io::SeekFrom::Start(offset as u64)).is_err() {
+                    reply.error(libc::EIO);
+                    return;
+                }
+                match f.write(data) {
+                    Ok(n) => reply.written(n as u32),
+                    Err(_) => reply.error(libc::EIO),
+                }
+            }
+            Err(_) => reply.error(libc::EIO),
+        }
+    }
+
+    /// Create and open a file.
+    /// Port of C tup's tup_fs_create() (fuse_fs.c:1239-1258).
+    /// Creates the file (via mknod_internal logic) then opens it.
+    fn create(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        _mode: u32,
+        _umask: u32,
+        _flags: i32,
+        reply: ReplyCreate,
+    ) {
+        let parent_path = match self.inode_path(parent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let child_path = parent_path.join(name);
+
+        // Create the file (C: mknod_internal with O_CREAT | O_WRONLY | O_TRUNC)
+        match std::fs::File::create(&child_path) {
+            Ok(_) => {
+                let ino = self.get_or_create_inode(&child_path);
+                match std::fs::symlink_metadata(&child_path) {
+                    Ok(meta) => {
+                        let attr = metadata_to_attr(ino, &meta);
+                        reply.created(&TTL, &attr, 0, 0, 0);
+                    }
+                    Err(_) => reply.error(libc::EIO),
+                }
+            }
+            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        }
+    }
+
+    /// Create a file node.
+    /// Port of C tup's mknod_internal() (fuse_fs.c:725-800).
+    fn mknod(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        _rdev: u32,
+        reply: ReplyEntry,
+    ) {
+        let parent_path = match self.inode_path(parent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let child_path = parent_path.join(name);
+
+        // C: Only regular files, FIFOs, and sockets are allowed.
+        // Device nodes are rejected with EPERM.
+        let file_mode = mode & libc::S_IFMT as u32;
+        if file_mode != libc::S_IFREG as u32
+            && file_mode != libc::S_IFIFO as u32
+            && file_mode != libc::S_IFSOCK as u32
+        {
+            eprintln!(
+                "tup error: mknod() with mode 0x{:x} is not permitted.",
+                mode
+            );
+            reply.error(libc::EPERM);
+            return;
+        }
+
+        match std::fs::File::create(&child_path) {
+            Ok(_) => {
+                let ino = self.get_or_create_inode(&child_path);
+                match std::fs::symlink_metadata(&child_path) {
+                    Ok(meta) => {
+                        let attr = metadata_to_attr(ino, &meta);
+                        reply.entry(&TTL, &attr, 0);
+                    }
+                    Err(_) => reply.error(libc::EIO),
+                }
+            }
+            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        }
+    }
+
+    /// Create a directory.
+    /// Port of C tup's tup_fs_mkdir() (fuse_fs.c:808-854).
+    /// In tup's FUSE, directories are virtual — tracked in tmpdir_list,
+    /// not actually created on the real filesystem.
+    fn mkdir(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        _umask: u32,
+        reply: ReplyEntry,
+    ) {
+        let parent_path = match self.inode_path(parent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let child_path = parent_path.join(name);
+
+        // C: For ignored paths (ccache etc), do real mkdir
+        let rel = child_path
+            .strip_prefix(&self.tup_top)
+            .unwrap_or(&child_path)
+            .to_string_lossy();
+        if Self::should_ignore(&format!("/{rel}")) {
+            match std::fs::create_dir_all(&child_path) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    reply.error(e.raw_os_error().unwrap_or(libc::EIO));
+                    return;
+                }
+            }
+        }
+        // else: C tracks in tmpdir_list (virtual dir)
+        // TODO: Wire to FileInfo tmpdir_list when integrated with updater (WP6)
+
+        // Create real dir for now (will be virtual when FUSE is fully wired)
+        let _ = std::fs::create_dir_all(&child_path);
+        let ino = self.get_or_create_inode(&child_path);
+        let attr = FileAttr {
+            ino,
+            size: 0,
+            blocks: 0,
+            atime: SystemTime::now(),
+            mtime: SystemTime::now(),
+            ctime: SystemTime::now(),
+            crtime: SystemTime::now(),
+            kind: FileType::Directory,
+            perm: (mode & 0o7777) as u16,
+            nlink: 2,
+            uid: unsafe { libc::getuid() },
+            gid: unsafe { libc::getgid() },
+            rdev: 0,
+            blksize: 4096,
+            flags: 0,
+        };
+        reply.entry(&TTL, &attr, 0);
+    }
+
+    /// Remove a file.
+    /// Port of C tup's tup_fs_unlink() (fuse_fs.c:856-890).
+    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
+        let parent_path = match self.inode_path(parent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let child_path = parent_path.join(name);
+
+        match std::fs::remove_file(&child_path) {
+            Ok(_) => reply.ok(),
+            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        }
+    }
+
+    /// Remove a directory.
+    /// Port of C tup's tup_fs_rmdir() (fuse_fs.c:892-935).
+    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
+        let parent_path = match self.inode_path(parent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let child_path = parent_path.join(name);
+
+        match std::fs::remove_dir(&child_path) {
+            Ok(_) => reply.ok(),
+            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        }
+    }
+
+    /// Create a symbolic link.
+    /// Port of C tup's tup_fs_symlink() (fuse_fs.c:937-955).
+    fn symlink(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        link_name: &OsStr,
+        target: &Path,
+        reply: ReplyEntry,
+    ) {
+        let parent_path = match self.inode_path(parent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let link_path = parent_path.join(link_name);
+
+        #[cfg(unix)]
+        match std::os::unix::fs::symlink(target, &link_path) {
+            Ok(_) => {
+                let ino = self.get_or_create_inode(&link_path);
+                match std::fs::symlink_metadata(&link_path) {
+                    Ok(meta) => {
+                        let attr = metadata_to_attr(ino, &meta);
+                        reply.entry(&TTL, &attr, 0);
+                    }
+                    Err(_) => reply.error(libc::EIO),
+                }
+            }
+            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        }
+    }
+
+    /// Rename a file.
+    /// Port of C tup's tup_fs_rename() (fuse_fs.c:957-1039).
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+        _flags: u32,
+        reply: fuser::ReplyEmpty,
+    ) {
+        let old_parent = match self.inode_path(parent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+        let new_parent = match self.inode_path(newparent) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        let old_path = old_parent.join(name);
+        let new_path = new_parent.join(newname);
+
+        match std::fs::rename(&old_path, &new_path) {
+            Ok(_) => {
+                // Update inode mapping
+                if let Some(ino) = self.path_to_inode.write().unwrap().remove(&old_path) {
+                    self.inodes.write().unwrap().insert(ino, new_path.clone());
+                    self.path_to_inode.write().unwrap().insert(new_path, ino);
+                }
+                reply.ok();
+            }
+            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        }
+    }
+
+    /// Hard links are not supported.
+    /// Port of C tup's tup_fs_link() (fuse_fs.c:1041-1047).
+    fn link(
+        &mut self,
+        _req: &Request<'_>,
+        _ino: u64,
+        _newparent: u64,
+        _newname: &OsStr,
+        reply: ReplyEntry,
+    ) {
+        eprintln!("tup error: hard links are not supported.");
+        reply.error(libc::EPERM);
+    }
 }
 
 #[cfg(test)]
