@@ -714,6 +714,7 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             keep_going,
             num_jobs,
             fuse_job_dir,
+            #[cfg(unix)]
             &_master_fork,
         )?;
         total_run += run;
@@ -1019,8 +1020,8 @@ fn execute_dir_rules(
     rules: &[tup_parser::Rule],
     keep_going: bool,
     num_jobs: usize,
-    fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)>,
-    master_fork: &Option<std::sync::Arc<tup_server::MasterFork>>,
+    #[allow(unused_variables)] fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    #[cfg(unix)] master_fork: &Option<std::sync::Arc<tup_server::MasterFork>>,
 ) -> anyhow::Result<(usize, usize)> {
     let mut updater = tup_updater::Updater::new(work_dir);
     updater.set_keep_going(keep_going);
@@ -1032,7 +1033,6 @@ fn execute_dir_rules(
     }
 
     // Set master_fork handle for FUSE command execution.
-    // C: master_fork_exec() routes commands through the pre-forked child.
     #[cfg(unix)]
     if let Some(ref mf) = master_fork {
         updater.set_master_fork(std::sync::Arc::clone(mf));
