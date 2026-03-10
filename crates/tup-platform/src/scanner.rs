@@ -76,7 +76,8 @@ fn scan_recursive(root: &Path, dir: &Path, result: &mut ScanResult) -> Result<()
             .strip_prefix(root)
             .map_err(|_| "failed to compute relative path".to_string())?
             .to_string_lossy()
-            .to_string();
+            .to_string()
+            .replace('\\', "/"); // Normalize to forward slashes (matching C tup)
 
         let file_type = entry
             .file_type()
