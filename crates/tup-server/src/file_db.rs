@@ -9,10 +9,13 @@
 //! - write_files() (232-313) — orchestrator
 //! - update_write_info() (693-841) — process write list
 //! - update_read_info() (842-876+) — process read list
+//! - add_node_to_tree() (334-397) — resolve path, create ghosts
 
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use tup_types::{LinkType, NodeType, TupId};
+use tup_db::{resolve_path, EntryCache};
+use tup_types::{LinkType, NodeType, TupId, DOT_DT};
 
 use crate::tup_fuse::FileInfo;
 
@@ -32,14 +35,10 @@ pub struct WriteFilesResult {
 ///
 /// Port of C tup's write_files() (file.c:232-313).
 /// Takes the FileInfo from FUSE tracking and creates/updates links in the DB.
-///
-/// This is the core integration point between the FUSE filesystem
-/// (which records file accesses) and the tup database (which stores
-/// the dependency graph).
 pub fn write_files(
     db: &tup_db::TupDb,
     cmd_id: TupId,
-    dir_id: TupId,
+    _dir_id: TupId,
     finfo: &mut FileInfo,
     tup_top: &Path,
 ) -> anyhow::Result<WriteFilesResult> {
@@ -51,7 +50,7 @@ pub fn write_files(
     };
 
     // Process unlinks first
-    // C: handle_unlink(info)
+    // C: handle_unlink(info) (file.c:242)
     finfo.handle_unlink();
 
     // C: Process remaining tmpdirs — error if not removed during execution
@@ -71,14 +70,14 @@ pub fn write_files(
 
     // Process writes (outputs)
     // C: update_write_info(f, cmdid, info, warnings, check_only)
-    result.writes_processed = update_write_info(db, cmd_id, dir_id, finfo, tup_top, &mut result)?;
+    result.writes_processed = update_write_info(db, cmd_id, finfo, tup_top, &mut result)?;
 
     // C: Rename temporary files to their real destinations (file.c:814-833)
-    finalize_mappings(finfo, tup_top)?;
+    finalize_mappings(db, finfo, tup_top)?;
 
     // Process reads (inputs)
     // C: update_read_info(f, cmdid, info, full_deps, vardt, important_link_removed)
-    result.reads_processed = update_read_info(db, cmd_id, dir_id, finfo, &mut result)?;
+    result.reads_processed = update_read_info(db, cmd_id, _dir_id, finfo, &mut result)?;
 
     Ok(result)
 }
@@ -87,20 +86,30 @@ pub fn write_files(
 ///
 /// Port of C tup's update_write_info() (file.c:693-841).
 /// For each file written during execution:
-/// 1. Check if it's a declared output
-/// 2. If not, report as undeclared output (error)
-/// 3. If yes, create the CMD→output normal link and update mtime
+/// 1. Resolve the file path to find its directory in the DB
+/// 2. Look up the node — must be a declared output (Generated type)
+/// 3. If not found, report as undeclared output (error)
 fn update_write_info(
     db: &tup_db::TupDb,
     cmd_id: TupId,
-    dir_id: TupId,
     finfo: &FileInfo,
     tup_top: &Path,
     result: &mut WriteFilesResult,
 ) -> anyhow::Result<usize> {
     let mut count = 0;
+    let mut cache = EntryCache::new();
+    cache.load(db, DOT_DT)?;
 
-    for written_file in &finfo.write_list {
+    // C: Remove duplicate write entries (file.c:734-739)
+    let mut seen = std::collections::HashSet::new();
+    let write_list: Vec<String> = finfo
+        .write_list
+        .iter()
+        .filter(|w| seen.insert((*w).clone()))
+        .cloned()
+        .collect();
+
+    for written_file in &write_list {
         // Skip system paths
         if written_file.starts_with("/dev")
             || written_file.starts_with("/proc")
@@ -109,7 +118,7 @@ fn update_write_info(
             continue;
         }
 
-        // Skip hidden files (C: get_path_elements → PG_HIDDEN check)
+        // Skip hidden files (C: get_path_elements → PG_HIDDEN check, file.c:713-720)
         if crate::tup_fuse::TupFuseFs::is_hidden(written_file) {
             result.warnings.push(format!(
                 "tup warning: Writing to hidden file '{written_file}'"
@@ -117,32 +126,31 @@ fn update_write_info(
             continue;
         }
 
-        // Look up the output node in the DB
-        let file_name = Path::new(written_file)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        // C: Resolve path from DOT_DT to find the directory and filename
+        // (file.c:741-756: find_dir_tupid_dt_pg → tup_db_select_tent_part)
+        let node = match resolve_path(db, &mut cache, DOT_DT, written_file) {
+            Ok((dir_id, Some(file_name))) => db.node_select(dir_id, &file_name).ok().flatten(),
+            _ => None,
+        };
 
-        if let Ok(Some(node)) = db.node_select(dir_id, &file_name) {
+        if let Some(node) = node {
             if node.node_type == NodeType::Generated {
-                // This is a declared output — will be finalized in finalize_mappings()
-                // For now, create the CMD→output link
+                // Declared output — create CMD→output link
                 let _ = db.link_insert(cmd_id, node.id, LinkType::Normal);
                 count += 1;
             }
         } else {
-            // C: File not in DB → undeclared output error (file.c:760-764)
+            // C: File not in DB → undeclared output error (file.c:757-772)
             eprintln!(
                 "tup error: File '{}' was written to, but is not in .tup/db. \
                  You probably should specify it as an output",
                 written_file
             );
             result.failed = true;
-            // C: Delete the undeclared output (do_unlink)
+            // C: Delete the undeclared output and its mapping (do_unlink)
             let undeclared_path = tup_top.join(written_file);
             let _ = std::fs::remove_file(&undeclared_path);
-            // Also remove its mapping if present
-            if let Some(mapping) = finfo.mappings.get(written_file) {
+            if let Some(mapping) = finfo.mappings.get(written_file.as_str()) {
                 let _ = std::fs::remove_file(&mapping.tmpname);
             }
         }
@@ -151,12 +159,19 @@ fn update_write_info(
     Ok(count)
 }
 
-/// Rename temporary files to their real destinations.
+/// Rename temporary files to their real destinations and update mtimes.
 ///
 /// Port of C tup's mapping finalization (file.c:814-833).
 /// After write_files validates outputs, move each .tup/tmp/hex file
-/// to its real output path.
-fn finalize_mappings(finfo: &mut FileInfo, tup_top: &Path) -> anyhow::Result<()> {
+/// to its real output path and update the mtime in the DB.
+fn finalize_mappings(
+    db: &tup_db::TupDb,
+    finfo: &mut FileInfo,
+    tup_top: &Path,
+) -> anyhow::Result<()> {
+    let mut cache = EntryCache::new();
+    cache.load(db, DOT_DT)?;
+
     let mappings: Vec<_> = std::mem::take(&mut finfo.mappings).into_iter().collect();
     for (_realname, mapping) in mappings {
         let dest = tup_top.join(&mapping.realname);
@@ -177,24 +192,40 @@ fn finalize_mappings(finfo: &mut FileInfo, tup_top: &Path) -> anyhow::Result<()>
                 );
             }
         }
+
+        // C: file_set_mtime(map->tent, map->realname) (file.c:827-831)
+        // Update the DB node's mtime from the actual file
+        if let Ok((dir_id, Some(file_name))) =
+            resolve_path(db, &mut cache, DOT_DT, &mapping.realname)
+        {
+            if let Ok(Some(node)) = db.node_select(dir_id, &file_name) {
+                if let Ok(meta) = std::fs::symlink_metadata(&dest) {
+                    let _ = db.node_set_mtime(node.id, meta.mtime(), meta.mtime_nsec());
+                }
+            }
+        }
     }
     Ok(())
 }
 
 /// Process the read list: create input dependencies.
 ///
-/// Port of C tup's update_read_info() (file.c:842+).
+/// Port of C tup's update_read_info() (file.c:842-876).
 /// For each file read during execution:
-/// 1. Look up or create the node in the DB
-/// 2. Create a normal link from the file to the command
+/// 1. Resolve the path from DOT_DT (handles cross-directory reads)
+/// 2. If the file exists in DB, create a normal link from file → CMD
+/// 3. If the file doesn't exist, create a GHOST node and link it
+///    (C: add_node_to_tree with SOTGV_CREATE_GHOSTS, file.c:346)
 fn update_read_info(
     db: &tup_db::TupDb,
     cmd_id: TupId,
-    dir_id: TupId,
+    _dir_id: TupId,
     finfo: &FileInfo,
     _result: &mut WriteFilesResult,
 ) -> anyhow::Result<usize> {
     let mut count = 0;
+    let mut cache = EntryCache::new();
+    cache.load(db, DOT_DT)?;
 
     for read_file in &finfo.read_list {
         // Skip system paths and hidden files
@@ -207,20 +238,47 @@ fn update_read_info(
             continue;
         }
 
-        // Look up the node
-        let file_name = Path::new(read_file)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        // C: Resolve path from DOT_DT (file.c:856: add_node_to_tree(DOT_DT, ...))
+        let (dir_id, file_name) = match resolve_path(db, &mut cache, DOT_DT, read_file) {
+            Ok((dir_id, Some(name))) => (dir_id, name),
+            Ok((_, None)) => continue, // Directory entry only (e.g. ".")
+            Err(_) => continue,        // Can't resolve path — skip
+        };
 
-        if let Ok(Some(node)) = db.node_select(dir_id, &file_name) {
-            // Create normal link: file → CMD
-            // C: This creates the auto-detected dependency
-            let _ = db.link_insert(node.id, cmd_id, LinkType::Normal);
-            count += 1;
-        }
-        // If file not in DB: C would create a ghost node here.
-        // Ghost creation will be implemented when ghost lifecycle is complete.
+        // C: tup_db_select_tent_part(dtent, pel->path, pel->len, &tent)
+        let node_id = match db.node_select(dir_id, &file_name) {
+            Ok(Some(node)) => {
+                // C: Skip directory nodes (file.c:382-391)
+                if node.node_type == NodeType::Dir || node.node_type == NodeType::GeneratedDir {
+                    continue;
+                }
+                node.id
+            }
+            Ok(None) => {
+                // C: Create a ghost node (file.c:363-378)
+                // Ghost nodes represent files that were read but don't exist in the DB yet.
+                // When the file is later created, the ghost gets upgraded to a real node.
+                match db.node_insert(
+                    dir_id,
+                    &file_name,
+                    NodeType::Ghost,
+                    -1, // INVALID_MTIME
+                    0,
+                    -1,
+                    None,
+                    None,
+                ) {
+                    Ok(ghost_id) => ghost_id,
+                    Err(_) => continue,
+                }
+            }
+            Err(_) => continue,
+        };
+
+        // Create normal link: file → CMD
+        // C: tent_tree_add_dup(&root, tent) then tup_db_check_actual_inputs()
+        let _ = db.link_insert(node_id, cmd_id, LinkType::Normal);
+        count += 1;
     }
 
     Ok(count)
