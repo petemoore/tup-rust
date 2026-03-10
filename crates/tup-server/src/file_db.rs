@@ -54,9 +54,27 @@ pub fn write_files(
     // C: handle_unlink(info)
     finfo.handle_unlink();
 
+    // C: Process remaining tmpdirs — error if not removed during execution
+    // (file.c:244-270)
+    for tmpdir in &finfo.tmpdirs {
+        eprintln!(
+            "tup error: Directory '{}' was created, but not subsequently removed. \
+             Only temporary directories can be created by commands.",
+            tmpdir
+        );
+        result.failed = true;
+    }
+    finfo.tmpdirs.clear();
+    if result.failed {
+        return Ok(result);
+    }
+
     // Process writes (outputs)
     // C: update_write_info(f, cmdid, info, warnings, check_only)
     result.writes_processed = update_write_info(db, cmd_id, dir_id, finfo, tup_top, &mut result)?;
+
+    // C: Rename temporary files to their real destinations (file.c:814-833)
+    finalize_mappings(finfo, tup_top)?;
 
     // Process reads (inputs)
     // C: update_read_info(f, cmdid, info, full_deps, vardt, important_link_removed)
@@ -78,7 +96,7 @@ fn update_write_info(
     dir_id: TupId,
     finfo: &FileInfo,
     tup_top: &Path,
-    _result: &mut WriteFilesResult,
+    result: &mut WriteFilesResult,
 ) -> anyhow::Result<usize> {
     let mut count = 0;
 
@@ -91,8 +109,15 @@ fn update_write_info(
             continue;
         }
 
+        // Skip hidden files (C: get_path_elements → PG_HIDDEN check)
+        if crate::tup_fuse::TupFuseFs::is_hidden(written_file) {
+            result.warnings.push(format!(
+                "tup warning: Writing to hidden file '{written_file}'"
+            ));
+            continue;
+        }
+
         // Look up the output node in the DB
-        // C: Uses tent from mapping, checks against output_root
         let file_name = Path::new(written_file)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -100,22 +125,60 @@ fn update_write_info(
 
         if let Ok(Some(node)) = db.node_select(dir_id, &file_name) {
             if node.node_type == NodeType::Generated {
-                // This is a declared output — update mtime
-                let file_path = tup_top.join(written_file);
-                if let Ok(meta) = std::fs::metadata(&file_path) {
-                    use std::os::unix::fs::MetadataExt;
-                    let mtime = meta.mtime();
-                    let mtime_ns = meta.mtime_nsec();
-                    let _ = db.node_set_mtime(node.id, mtime, mtime_ns);
-                }
-                // Ensure CMD→output link exists
+                // This is a declared output — will be finalized in finalize_mappings()
+                // For now, create the CMD→output link
                 let _ = db.link_insert(cmd_id, node.id, LinkType::Normal);
                 count += 1;
+            }
+        } else {
+            // C: File not in DB → undeclared output error (file.c:760-764)
+            eprintln!(
+                "tup error: File '{}' was written to, but is not in .tup/db. \
+                 You probably should specify it as an output",
+                written_file
+            );
+            result.failed = true;
+            // C: Delete the undeclared output (do_unlink)
+            let undeclared_path = tup_top.join(written_file);
+            let _ = std::fs::remove_file(&undeclared_path);
+            // Also remove its mapping if present
+            if let Some(mapping) = finfo.mappings.get(written_file) {
+                let _ = std::fs::remove_file(&mapping.tmpname);
             }
         }
     }
 
     Ok(count)
+}
+
+/// Rename temporary files to their real destinations.
+///
+/// Port of C tup's mapping finalization (file.c:814-833).
+/// After write_files validates outputs, move each .tup/tmp/hex file
+/// to its real output path.
+fn finalize_mappings(finfo: &mut FileInfo, tup_top: &Path) -> anyhow::Result<()> {
+    let mappings: Vec<_> = std::mem::take(&mut finfo.mappings).into_iter().collect();
+    for (_realname, mapping) in mappings {
+        let dest = tup_top.join(&mapping.realname);
+
+        // Ensure destination directory exists
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // C: renameat(tup_top_fd(), map->tmpname, tup_top_fd(), map->realname)
+        if mapping.tmpname != dest {
+            if let Err(e) = std::fs::rename(&mapping.tmpname, &dest) {
+                eprintln!(
+                    "tup error: Unable to rename temporary file '{}' to destination '{}': {}",
+                    mapping.tmpname.display(),
+                    dest.display(),
+                    e
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Process the read list: create input dependencies.
