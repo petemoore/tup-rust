@@ -633,6 +633,24 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         cmd_id_map.push((dir_path, cmd.cmd_id));
     }
 
+    // Create master_fork child process BEFORE FUSE mount.
+    // C: server_pre_init() (master_fork.c:150-261) — fork a persistent child
+    // that will later execute commands via chdir(job)+chdir(dir)+exec.
+    // This must happen before the FUSE mount so the child process can
+    // chdir() into the FUSE mount correctly on macOS.
+    #[cfg(unix)]
+    let _master_fork: Option<std::sync::Arc<tup_server::MasterFork>> =
+        match tup_server::MasterFork::pre_init() {
+            Ok(mf) => {
+                log::debug!("master_fork child process created");
+                Some(std::sync::Arc::new(mf))
+            }
+            Err(e) => {
+                log::debug!("master_fork not available: {e}");
+                None
+            }
+        };
+
     // Mount FUSE for automatic dependency tracking (if available)
     // C: server_init(SERVER_UPDATER_MODE) before command execution
     #[cfg(feature = "fuse")]
@@ -690,7 +708,14 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         #[cfg(not(feature = "fuse"))]
         let fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
 
-        let (run, failed) = execute_dir_rules(dir_path, rules, keep_going, num_jobs, fuse_job_dir)?;
+        let (run, failed) = execute_dir_rules(
+            dir_path,
+            rules,
+            keep_going,
+            num_jobs,
+            fuse_job_dir,
+            &_master_fork,
+        )?;
         total_run += run;
         total_failed += failed;
 
@@ -720,6 +745,22 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
                     }
                 }
             }
+        }
+    }
+
+    // Shut down master_fork child process.
+    // C: server_post_exit() (master_fork.c:263-294) — send shutdown message,
+    // wait for child to exit. Must happen before FUSE unmount.
+    #[cfg(unix)]
+    if let Some(mf) = _master_fork {
+        // Need to unwrap from Arc — only works if no other references remain.
+        // The Updater clones were dropped when execute_dir_rules returned.
+        if let Ok(mf) = std::sync::Arc::try_unwrap(mf) {
+            if let Err(e) = mf.shutdown() {
+                eprintln!("tup warning: master_fork shutdown failed: {e}");
+            }
+        } else {
+            log::debug!("master_fork has extra references, skipping explicit shutdown");
         }
     }
 
@@ -972,12 +1013,14 @@ fn try_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
     ))
 }
 
+#[allow(unused_variables)]
 fn execute_dir_rules(
     work_dir: &Path,
     rules: &[tup_parser::Rule],
     keep_going: bool,
     num_jobs: usize,
-    #[allow(unused_variables)] fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    master_fork: &Option<std::sync::Arc<tup_server::MasterFork>>,
 ) -> anyhow::Result<(usize, usize)> {
     let mut updater = tup_updater::Updater::new(work_dir);
     updater.set_keep_going(keep_going);
@@ -986,6 +1029,13 @@ fn execute_dir_rules(
     #[cfg(unix)]
     if let Some((job, dir)) = fuse_job_dir {
         updater.set_fuse_job_dir(job, dir);
+    }
+
+    // Set master_fork handle for FUSE command execution.
+    // C: master_fork_exec() routes commands through the pre-forked child.
+    #[cfg(unix)]
+    if let Some(ref mf) = master_fork {
+        updater.set_master_fork(std::sync::Arc::clone(mf));
     }
 
     // Use pre-expanded execution since expand_rules_for_dir already

@@ -51,6 +51,12 @@ pub struct Updater {
     /// Port of C tup's exec_internal (master_fork.c:524-536).
     #[cfg(unix)]
     fuse_paths: Option<(PathBuf, PathBuf)>,
+    /// Optional master_fork handle for FUSE command execution.
+    /// When set, commands are executed through the master_fork child process
+    /// (which was forked before the FUSE mount), ensuring correct CWD handling.
+    /// Port of C tup's master_fork_exec() (master_fork.c:306-349).
+    #[cfg(unix)]
+    master_fork: Option<Arc<tup_server::MasterFork>>,
 }
 
 impl Updater {
@@ -64,6 +70,8 @@ impl Updater {
             total_expected: 0,
             #[cfg(unix)]
             fuse_paths: None,
+            #[cfg(unix)]
+            master_fork: None,
         }
     }
 
@@ -72,6 +80,14 @@ impl Updater {
     #[cfg(unix)]
     pub fn set_fuse_job_dir(&mut self, job: PathBuf, dir: PathBuf) {
         self.fuse_paths = Some((job, dir));
+    }
+
+    /// Set the master_fork handle for FUSE command execution.
+    /// When set, commands are routed through the pre-forked child process.
+    /// Port of C tup's master_fork_exec() pattern.
+    #[cfg(unix)]
+    pub fn set_master_fork(&mut self, mf: Arc<tup_server::MasterFork>) {
+        self.master_fork = Some(mf);
     }
 
     /// Set whether to continue after command failures.
@@ -169,6 +185,13 @@ impl Updater {
     }
 
     /// Execute a shell command.
+    ///
+    /// When `master_fork` is set and `fuse_paths` are configured, commands
+    /// are routed through the pre-forked master_fork child process. This
+    /// ensures the child was forked before the FUSE mount, so chdir() into
+    /// the FUSE mount works correctly on macOS.
+    ///
+    /// Port of C tup's master_fork_exec() + exec_internal() flow.
     fn execute_command(
         &mut self,
         cmd: &str,
@@ -191,6 +214,45 @@ impl Updater {
 
         let start = Instant::now();
 
+        // Try master_fork path first (preferred for FUSE on macOS).
+        // C tup: master_fork_exec() sends command over socket to pre-forked child,
+        // which does fork+chdir(job)+chdir(dir)+exec. This is the correct path
+        // because the master_fork child was created before the FUSE mount.
+        #[cfg(unix)]
+        if let (Some(ref mf), Some((ref job, ref dir))) = (&self.master_fork, &self.fuse_paths) {
+            let env = tup_server::master_fork::build_env_block();
+            let sid = self.commands_run as i64;
+            let job_str = job.to_string_lossy();
+            let dir_str = dir.to_string_lossy();
+
+            let exit_code = mf
+                .exec(sid, &job_str, &dir_str, cmd, &env, false)
+                .map_err(|e| format!("master_fork exec failed: {e}"))?;
+
+            let duration = start.elapsed();
+            let success = exit_code == 0;
+
+            // Note: with master_fork, stdout/stderr go to the terminal directly
+            // (the grandchild inherits the master_fork child's stdout/stderr).
+            // C tup redirects to .tup/tmp/output-N files; we'll add that later.
+            if !success {
+                self.commands_failed += 1;
+                eprintln!(" *** Command failed with exit code {exit_code}");
+            }
+
+            return Ok(CommandResult {
+                command: cmd.to_string(),
+                display: display.map(String::from),
+                success,
+                exit_code: Some(exit_code),
+                stdout: String::new(),
+                stderr: String::new(),
+                duration_ms: duration.as_millis() as u64,
+                expected_outputs: expected_outputs.to_vec(),
+            });
+        }
+
+        // Fallback: use Command::new with optional pre_exec for FUSE paths
         let shell = if cfg!(target_os = "windows") {
             "cmd"
         } else {
@@ -209,12 +271,6 @@ impl Updater {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // C tup: child does chdir(job) then chdir(dir) (master_fork.c:524-536).
-        // CRITICAL: We must use pre_exec with libc::chdir(), NOT Command::current_dir().
-        // Rust's current_dir() resolves the path in the parent before fork, which
-        // causes the macOS kernel to see the real path instead of the FUSE path.
-        // By doing chdir() after fork (in pre_exec), the child process enters the
-        // FUSE mount and all subsequent file operations go through FUSE.
         // C tup: child does chdir(job) then chdir(dir) (master_fork.c:524-536).
         // CRITICAL: We must use pre_exec with libc::chdir(), NOT Command::current_dir().
         // Rust's current_dir() resolves the path in the parent before fork, which
