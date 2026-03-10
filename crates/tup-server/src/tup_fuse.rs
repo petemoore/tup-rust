@@ -28,6 +28,10 @@ const TUP_JOB: &str = "@tupjob-";
 /// C: #define TUP_TMP ".tup/tmp"
 const TUP_TMP: &str = ".tup/tmp";
 
+/// Virtual directory for @-variable access.
+/// C: #define TUP_VAR_VIRTUAL_DIR "@tup@"
+const TUP_VAR_VIRTUAL_DIR: &str = "@tup@";
+
 /// TTL for FUSE attribute caching.
 const TTL: Duration = Duration::from_secs(1);
 
@@ -126,32 +130,67 @@ impl FileInfo {
         } else {
             self.handle_open_file(at, filename);
             // C: add_symlinks(filename, info) for reads
-            // We skip symlink following for now — requires readlinkat()
+            // C: add_symlinks(filename, info) for reads (file.c:186-188)
+            // If this file is a symlink, also track its target as a read dependency.
+            self.add_symlinks(filename);
+        }
+    }
+
+    /// Follow symlinks and record their targets as read dependencies.
+    /// Port of C tup's add_symlinks() + get_symlink() (file.c:93-144).
+    fn add_symlinks(&mut self, path: &str) {
+        if let Ok(target) = std::fs::read_link(path) {
+            let link_path = if target.is_absolute() {
+                target.to_string_lossy().to_string()
+            } else {
+                // Relative symlink — resolve relative to the file's directory
+                if let Some(last_slash) = path.rfind('/') {
+                    format!("{}/{}", &path[..last_slash + 1], target.display())
+                } else {
+                    target.to_string_lossy().to_string()
+                }
+            };
+            self.handle_open_file(AccessType::Read, &link_path);
         }
     }
 
     /// Record a rename event.
     ///
     /// Port of C tup's handle_rename() (file.c:573-602).
-    /// A rename is treated as: unlink(old) + write(new).
+    /// Renames existing write_list/read_list entries in-place from old→new,
+    /// then removes any unlink entry for the destination.
     pub fn handle_rename(&mut self, from: &str, to: &str) {
-        // C: treat rename as unlink(from) + write(to)
-        self.handle_open_file(AccessType::Unlink, from);
-        self.handle_open_file(AccessType::Write, to);
+        // C: Walk write_list, rename entries matching `from` to `to`
+        for entry in &mut self.write_list {
+            if entry == from {
+                *entry = to.to_string();
+            }
+        }
+        // C: Walk read_list, rename entries matching `from` to `to`
+        for entry in &mut self.read_list {
+            if entry == from {
+                *entry = to.to_string();
+            }
+        }
+        // C: check_unlink_list(to, &info->unlink_list)
+        self.unlink_list.retain(|u| u != to);
     }
 
     /// Process the unlink list after command execution.
     ///
     /// Port of C tup's handle_unlink() (file.c:623-643).
-    /// For each unlinked file, if it was also written to during this
-    /// command, the unlink is a no-op (the file was recreated).
-    /// Otherwise, the unlink stands.
+    /// For each unlinked file, remove matching entries from BOTH
+    /// write_list AND read_list, then discard the unlink entry.
     pub fn handle_unlink(&mut self) {
-        // C: For each entry in unlink_list, check if it appears in write_list.
-        // If so, remove it from unlink_list (it was recreated).
-        let write_set: std::collections::HashSet<&str> =
-            self.write_list.iter().map(|s| s.as_str()).collect();
-        self.unlink_list.retain(|u| !write_set.contains(u.as_str()));
+        // C: For each entry in unlink_list:
+        //   - remove matching entries from write_list
+        //   - remove matching entries from read_list
+        //   - then remove the unlink entry itself
+        let unlinks: Vec<String> = self.unlink_list.drain(..).collect();
+        for u in &unlinks {
+            self.write_list.retain(|w| w != u);
+            self.read_list.retain(|r| r != u);
+        }
     }
 
     /// Add a file mapping (output file → temporary file).
@@ -207,7 +246,10 @@ pub struct TupFuseFs {
     jobs: Arc<RwLock<BTreeMap<i64, Arc<Mutex<FileInfo>>>>>,
     /// Our process group ID for context checking.
     /// C: static pid_t ourpgid
-    ourpgid: u32,
+    ourpgid: i32,
+    /// Maximum open files before falling back to on-the-fly opens.
+    /// C: static int max_open_files = 128
+    max_open_files: i32,
     /// Inode→path mapping.
     /// fuser uses inodes (low-level API); C tup uses paths (high-level API).
     /// We bridge the gap with this table. Inode 1 = root.
@@ -219,8 +261,30 @@ pub struct TupFuseFs {
 }
 
 impl TupFuseFs {
+    /// Port of C tup's tup_fuse_fs_init() (fuse_fs.c:50-69).
+    /// Detects max open files via RLIMIT_NOFILE and stores our process group ID.
     pub fn new(tup_top: &Path) -> Self {
-        let pgid = unsafe { libc::getpgid(0) } as u32;
+        let pgid = unsafe { libc::getpgid(0) };
+
+        // C: tup_fuse_fs_init() — detect max open files
+        // Keep doubling rlim_cur until we hit the real limit (macOS sets rlim_max
+        // to -1, so we probe). Then use half that as our max_open_files.
+        let mut max_open_files: i32 = 128;
+        unsafe {
+            let mut rlim: libc::rlimit = std::mem::zeroed();
+            if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) == 0 {
+                for _ in 0..10 {
+                    rlim.rlim_cur *= 2;
+                    if libc::setrlimit(libc::RLIMIT_NOFILE, &rlim) != 0 {
+                        break;
+                    }
+                }
+                if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rlim) == 0 {
+                    max_open_files = (rlim.rlim_cur / 2) as i32;
+                }
+            }
+        }
+
         let mut inodes = BTreeMap::new();
         let mut path_to_inode = BTreeMap::new();
         // Inode 1 = FUSE root (= tup_top directory)
@@ -230,6 +294,7 @@ impl TupFuseFs {
             tup_top: tup_top.to_path_buf(),
             jobs: Arc::new(RwLock::new(BTreeMap::new())),
             ourpgid: pgid,
+            max_open_files,
             inodes: RwLock::new(inodes),
             path_to_inode: RwLock::new(path_to_inode),
             next_inode: AtomicU64::new(2), // 1 is root
@@ -299,20 +364,72 @@ impl TupFuseFs {
         path
     }
 
+    /// Verify that the requesting process is in our process group.
+    /// Port of C tup's context_check() (fuse_fs.c:243-281).
+    /// Returns true if OK, false if the process is not allowed.
+    fn context_check(&self, req: &Request<'_>) -> bool {
+        let pid = req.pid() as i32;
+        let pgid = unsafe { libc::getpgid(pid) };
+        // C: OSX/container: pgid == -1 && errno == ESRCH → allow (zombie or container)
+        if pgid == -1 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                return true;
+            }
+            return false;
+        }
+        if self.ourpgid != pgid {
+            return false;
+        }
+        true
+    }
+
     /// Check if a path should be hidden from dependency tracking.
-    /// C: is_hidden()
-    fn is_hidden(path: &str) -> bool {
+    /// Port of C tup's is_hidden() (fuse_fs.c:92-107).
+    pub fn is_hidden(path: &str) -> bool {
         path.contains("/.git")
             || path.contains("/.tup")
             || path.contains("/.hg")
             || path.contains("/.svn")
             || path.contains("/.bzr")
+            || Self::is_ccache_path(path)
     }
 
     /// Check if a path should be ignored entirely.
-    /// C: ignore_file()
+    /// Port of C tup's ignore_file() (fuse_fs.c:283-294).
     fn should_ignore(path: &str) -> bool {
-        path.starts_with("/dev") || path.starts_with("/sys") || path.starts_with("/proc")
+        path.starts_with("/dev")
+            || path.starts_with("/sys")
+            || path.starts_with("/proc")
+            || Self::is_ccache_path(path)
+    }
+
+    /// Check if a path is a ccache/icecream path.
+    /// Port of C tup's is_ccache_path() (ccache.c:24-44).
+    fn is_ccache_path(path: &str) -> bool {
+        path.contains("/.ccache")
+            || path.contains("/.cache/ccache")
+            || path.contains("/ccache-tmp/")
+            || path.starts_with("/tmp/.icecream-")
+    }
+
+    /// Check if a peeled path refers to the @tup@ virtual variable directory.
+    /// Port of C tup's get_virtual_var() (fuse_fs.c:319-340).
+    /// Returns Some("") for the @tup@ directory itself, Some("VARNAME") for a variable,
+    /// or None if not a @tup@ path.
+    fn get_virtual_var<'a>(&self, peeled: &'a str) -> Option<&'a str> {
+        // C: The peeled path must start with tup_top, then contain @tup@
+        // In our case, peeled is already relative to tup_top, so just look for @tup@
+        if let Some(idx) = peeled.find(TUP_VAR_VIRTUAL_DIR) {
+            let after = &peeled[idx + TUP_VAR_VIRTUAL_DIR.len()..];
+            if after.is_empty() {
+                return Some(""); // Just the @tup@ directory
+            }
+            if let Some(rest) = after.strip_prefix('/') {
+                return Some(rest); // Variable name
+            }
+        }
+        None
     }
 
     /// Resolve a FUSE path to a real filesystem path.
@@ -349,6 +466,19 @@ impl TupFuseFs {
     fn create_tmp_path(&self) -> PathBuf {
         let num = FILENUM.fetch_add(1, Ordering::SeqCst);
         self.tup_top.join(format!("{TUP_TMP}/{num:x}"))
+    }
+
+    /// Get the FileInfo for a path, if it belongs to a registered job.
+    /// Returns (job_id, finfo_arc, peeled_path).
+    /// Equivalent to C's get_finfo() + peel() combined.
+    fn get_finfo_and_peeled(&self, path: &Path) -> Option<(i64, Arc<Mutex<FileInfo>>, String)> {
+        let path_str = path.to_string_lossy();
+        let full_path = format!("/{}", path_str.trim_start_matches('/'));
+        let job_id = Self::get_job_id(&full_path)?;
+        let peeled = Self::peel(&full_path).trim_start_matches('/').to_string();
+        let jobs = self.jobs.read().unwrap();
+        let finfo = jobs.get(&job_id)?.clone();
+        Some((job_id, finfo, peeled))
     }
 
     /// Record a file access for a given inode.
@@ -431,6 +561,41 @@ fn metadata_to_attr(ino: u64, meta: &std::fs::Metadata) -> FileAttr {
     }
 }
 
+/// Helper: create a synthetic directory FileAttr.
+fn synthetic_dir_attr(ino: u64) -> FileAttr {
+    FileAttr {
+        ino,
+        size: 0,
+        blocks: 0,
+        atime: SystemTime::now(),
+        mtime: SystemTime::now(),
+        ctime: SystemTime::now(),
+        crtime: SystemTime::now(),
+        kind: FileType::Directory,
+        perm: 0o755,
+        nlink: 2,
+        uid: unsafe { libc::getuid() },
+        gid: unsafe { libc::getgid() },
+        rdev: 0,
+        blksize: 4096,
+        flags: 0,
+    }
+}
+
+/// Helper: open a file by CString path, returning fd or errno.
+fn libc_open(path: &Path, flags: i32, mode: libc::mode_t) -> Result<i32, i32> {
+    let c_path =
+        std::ffi::CString::new(path.to_string_lossy().as_bytes()).map_err(|_| libc::EINVAL)?;
+    let fd = unsafe { libc::open(c_path.as_ptr(), flags, mode as libc::c_uint) };
+    if fd < 0 {
+        Err(std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EIO))
+    } else {
+        Ok(fd)
+    }
+}
+
 /// Implement the fuser Filesystem trait for tup's passthrough FUSE.
 ///
 /// C tup uses the high-level (path-based) libfuse API. The fuser crate
@@ -441,7 +606,11 @@ fn metadata_to_attr(ino: u64, meta: &std::fs::Metadata) -> FileAttr {
 impl Filesystem for TupFuseFs {
     /// Look up a directory entry by name.
     /// C: implicit in getattr/readdir path-based operations.
-    fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let parent_path = match self.inode_path(parent) {
             Some(p) => p,
             None => {
@@ -453,45 +622,46 @@ impl Filesystem for TupFuseFs {
         let name_str = name.to_string_lossy();
 
         // Handle @tupjob-N virtual directories.
-        // C: get_finfo() extracts job number from path prefix.
         if name_str.starts_with(TUP_JOB) {
             if let Some(job_id_str) = name_str.strip_prefix(TUP_JOB) {
-                if let Ok(_job_id) = job_id_str.parse::<i64>() {
-                    // Virtual job directory — maps to tup_top
+                if job_id_str.parse::<i64>().is_ok() {
                     let ino = self.get_or_create_inode(&parent_path.join(name));
-                    let attr = FileAttr {
-                        ino,
-                        size: 0,
-                        blocks: 0,
-                        atime: SystemTime::now(),
-                        mtime: SystemTime::now(),
-                        ctime: SystemTime::now(),
-                        crtime: SystemTime::now(),
-                        kind: FileType::Directory,
-                        perm: 0o755,
-                        nlink: 2,
-                        uid: unsafe { libc::getuid() },
-                        gid: unsafe { libc::getgid() },
-                        rdev: 0,
-                        blksize: 4096,
-                        flags: 0,
-                    };
-                    reply.entry(&TTL, &attr, 0);
+                    reply.entry(&TTL, &synthetic_dir_attr(ino), 0);
                     return;
                 }
             }
         }
 
-        // For paths inside @tupjob-N, resolve to the real filesystem for stat
-        // but keep the virtual path for inode tracking (so record_access works).
         let virtual_child = parent_path.join(name);
-        let real_child = self.resolve_real_path(&virtual_child);
 
+        // Check if this matches a tmpdir or mapping in any job's FileInfo
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&virtual_child) {
+            if let Ok(finfo) = finfo_arc.lock() {
+                // Check tmpdirs
+                if finfo.tmpdirs.iter().any(|td| td == &peeled) {
+                    let ino = self.get_or_create_inode(&virtual_child);
+                    reply.entry(&TTL, &synthetic_dir_attr(ino), 0);
+                    return;
+                }
+                // Check mappings — stat the tmpname instead
+                if let Some(mapping) = finfo.find_mapping(&peeled) {
+                    let tmpname = mapping.tmpname.clone();
+                    drop(finfo);
+                    if let Ok(meta) = std::fs::symlink_metadata(&tmpname) {
+                        let ino = self.get_or_create_inode(&virtual_child);
+                        reply.entry(&TTL, &metadata_to_attr(ino, &meta), 0);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Fall through to real filesystem
+        let real_child = self.resolve_real_path(&virtual_child);
         match std::fs::symlink_metadata(&real_child) {
             Ok(meta) => {
                 let ino = self.get_or_create_inode(&virtual_child);
-                let attr = metadata_to_attr(ino, &meta);
-                reply.entry(&TTL, &attr, 0);
+                reply.entry(&TTL, &metadata_to_attr(ino, &meta), 0);
             }
             Err(_) => {
                 reply.error(libc::ENOENT);
@@ -501,7 +671,11 @@ impl Filesystem for TupFuseFs {
 
     /// Get file attributes.
     /// Port of C tup's tup_fs_getattr() (fuse_fs.c:344-435).
-    fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, req: &Request<'_>, ino: u64, reply: ReplyAttr) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let path = match self.inode_path(ino) {
             Some(p) => p,
             None => {
@@ -510,10 +684,9 @@ impl Filesystem for TupFuseFs {
             }
         };
 
-        // Check if this is the @tupjob-N directory itself (not a child within it)
+        // Check if this is the @tupjob-N directory itself
         let path_str = path.to_string_lossy();
         let is_job_dir_itself = if let Some(idx) = path_str.find(TUP_JOB) {
-            // It's the job dir itself if there's nothing after @tupjob-N or just /
             let after = &path_str[idx + TUP_JOB.len()..];
             let after_num = after.find('/').map(|p| &after[p + 1..]).unwrap_or("");
             after_num.is_empty()
@@ -522,36 +695,59 @@ impl Filesystem for TupFuseFs {
         };
 
         if is_job_dir_itself {
-            // Virtual job directory — return synthetic dir stat
-            let attr = FileAttr {
-                ino,
-                size: 0,
-                blocks: 0,
-                atime: SystemTime::now(),
-                mtime: SystemTime::now(),
-                ctime: SystemTime::now(),
-                crtime: SystemTime::now(),
-                kind: FileType::Directory,
-                perm: 0o755,
-                nlink: 2,
-                uid: unsafe { libc::getuid() },
-                gid: unsafe { libc::getgid() },
-                rdev: 0,
-                blksize: 4096,
-                flags: 0,
-            };
-            reply.attr(&TTL, &attr);
+            reply.attr(&TTL, &synthetic_dir_attr(ino));
             return;
         }
 
-        // Resolve virtual paths to real filesystem
+        // Check job-specific resources: tmpdirs, mappings, @tup@ vars
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&path) {
+            // C: Protect .tup/mnt from sub-processes (t6056)
+            if peeled == ".tup/mnt" || peeled.contains("/.tup/mnt") {
+                reply.error(libc::EPERM);
+                return;
+            }
+
+            if let Ok(mut finfo) = finfo_arc.lock() {
+                // Check tmpdirs — return tup_top's stat (C: fstat(tup_top_fd(), stbuf))
+                if finfo.tmpdirs.iter().any(|td| td == &peeled) {
+                    if let Ok(meta) = std::fs::symlink_metadata(&self.tup_top) {
+                        reply.attr(&TTL, &metadata_to_attr(ino, &meta));
+                        return;
+                    }
+                }
+                // Check mappings — stat the tmpname
+                if let Some(mapping) = finfo.find_mapping(&peeled) {
+                    let tmpname = mapping.tmpname.clone();
+                    drop(finfo);
+                    if let Ok(meta) = std::fs::symlink_metadata(&tmpname) {
+                        reply.attr(&TTL, &metadata_to_attr(ino, &meta));
+                        return;
+                    }
+                } else {
+                    // C: Check @tup@ virtual variable directory (fuse_fs.c:401-423)
+                    if let Some(var) = self.get_virtual_var(&peeled) {
+                        if var.is_empty() {
+                            // @tup@ directory itself — return as directory
+                            reply.attr(&TTL, &synthetic_dir_attr(ino));
+                            return;
+                        } else {
+                            // @tup@/VARNAME — record var access and return error
+                            finfo.handle_open_file(AccessType::Var, var);
+                            reply.error(libc::ENOENT);
+                            return;
+                        }
+                    }
+                    drop(finfo);
+                }
+            }
+        }
+
+        // Fall through to real filesystem
         let real_path = self.resolve_real_path(&path);
         match std::fs::symlink_metadata(&real_path) {
             Ok(meta) => {
-                let attr = metadata_to_attr(ino, &meta);
-                // C: tup_fuse_handle_file(path, stripped, ACCESS_READ)
                 self.record_access(ino, tup_types::AccessType::Read);
-                reply.attr(&TTL, &attr);
+                reply.attr(&TTL, &metadata_to_attr(ino, &meta));
             }
             Err(_) => {
                 reply.error(libc::ENOENT);
@@ -561,7 +757,11 @@ impl Filesystem for TupFuseFs {
 
     /// Check file access permissions.
     /// Port of C tup's tup_fs_access() (fuse_fs.c:437-495).
-    fn access(&mut self, _req: &Request<'_>, ino: u64, mask: i32, reply: fuser::ReplyEmpty) {
+    fn access(&mut self, req: &Request<'_>, ino: u64, mask: i32, reply: fuser::ReplyEmpty) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let path = match self.inode_path(ino) {
             Some(p) => p,
             None => {
@@ -570,14 +770,66 @@ impl Filesystem for TupFuseFs {
             }
         };
 
-        // Virtual @tupjob-N dirs always accessible
-        if path.to_string_lossy().contains(TUP_JOB) {
-            reply.ok();
-            return;
+        // Check job-specific: mappings and tmpdirs
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&path) {
+            if let Ok(finfo) = finfo_arc.lock() {
+                // Mapped file — check access on tmpname
+                if let Some(mapping) = finfo.find_mapping(&peeled) {
+                    let c_path = match std::ffi::CString::new(
+                        mapping.tmpname.to_string_lossy().as_bytes(),
+                    ) {
+                        Ok(p) => p,
+                        Err(_) => {
+                            reply.error(libc::EINVAL);
+                            return;
+                        }
+                    };
+                    let rc = unsafe { libc::access(c_path.as_ptr(), mask) };
+                    if rc == 0 {
+                        reply.ok();
+                    } else {
+                        reply.error(
+                            std::io::Error::last_os_error()
+                                .raw_os_error()
+                                .unwrap_or(libc::EACCES),
+                        );
+                    }
+                    return;
+                }
+                // C: Check @tup@ virtual directory in access() (fuse_fs.c:483-487)
+                if let Some(var) = self.get_virtual_var(&peeled) {
+                    if var.is_empty() {
+                        reply.ok();
+                        return;
+                    }
+                }
+                // Tmpdir — use tup_top access (C: faccessat(tup_top_fd(), ".", mask))
+                if finfo.tmpdirs.iter().any(|td| td == &peeled) {
+                    let c_path =
+                        match std::ffi::CString::new(self.tup_top.to_string_lossy().as_bytes()) {
+                            Ok(p) => p,
+                            Err(_) => {
+                                reply.error(libc::EINVAL);
+                                return;
+                            }
+                        };
+                    let rc = unsafe { libc::access(c_path.as_ptr(), mask) };
+                    if rc == 0 {
+                        reply.ok();
+                    } else {
+                        reply.error(
+                            std::io::Error::last_os_error()
+                                .raw_os_error()
+                                .unwrap_or(libc::EACCES),
+                        );
+                    }
+                    return;
+                }
+            }
         }
 
+        // Fall through to real filesystem
         let real_path = self.resolve_real_path(&path);
-        // Use faccessat on the real path
         let c_path = match std::ffi::CString::new(real_path.to_string_lossy().as_bytes()) {
             Ok(p) => p,
             Err(_) => {
@@ -598,14 +850,15 @@ impl Filesystem for TupFuseFs {
     }
 
     /// Set file attributes (chmod, truncate, utimes).
-    /// Port of C tup's tup_fs_chmod/truncate/utimens.
+    /// Port of C tup's tup_fs_chmod/truncate/utimens (fuse_fs.c:1049-1237).
+    /// Only operates on mapped files and tmpdirs; returns EPERM otherwise.
     fn setattr(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         ino: u64,
         mode: Option<u32>,
-        _uid: Option<u32>,
-        _gid: Option<u32>,
+        uid: Option<u32>,
+        gid: Option<u32>,
         size: Option<u64>,
         _atime: Option<fuser::TimeOrNow>,
         _mtime: Option<fuser::TimeOrNow>,
@@ -617,6 +870,10 @@ impl Filesystem for TupFuseFs {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let path = match self.inode_path(ino) {
             Some(p) => p,
             None => {
@@ -624,38 +881,116 @@ impl Filesystem for TupFuseFs {
                 return;
             }
         };
-        let real_path = self.resolve_real_path(&path);
+
+        // Determine the target path: mapped tmpname, tmpdir, or real file
+        let target_path =
+            if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&path) {
+                if let Ok(finfo) = finfo_arc.lock() {
+                    if let Some(mapping) = finfo.find_mapping(&peeled) {
+                        // Mapped file — operate on tmpname
+                        mapping.tmpname.clone()
+                    } else if finfo.tmpdirs.iter().any(|td| td == &peeled) {
+                        // Tmpdir — chmod/utimens are no-ops
+                        if let Ok(meta) = std::fs::symlink_metadata(&self.tup_top) {
+                            reply.attr(&TTL, &metadata_to_attr(ino, &meta));
+                        } else {
+                            reply.error(libc::EIO);
+                        }
+                        return;
+                    } else if Self::is_hidden(&peeled) {
+                        // Hidden files can be modified
+                        self.resolve_real_path(&path)
+                    } else {
+                        // Not a mapped file, not a tmpdir, not hidden → EPERM
+                        let peeled_str = peeled.clone();
+                        drop(finfo);
+                        eprintln!(
+                        "tup error: Unable to modify files not created by this job: {peeled_str}"
+                    );
+                        reply.error(libc::EPERM);
+                        return;
+                    }
+                } else {
+                    self.resolve_real_path(&path)
+                }
+            } else {
+                self.resolve_real_path(&path)
+            };
 
         // Handle truncate
         if let Some(new_size) = size {
-            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&real_path) {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&target_path) {
                 let _ = f.set_len(new_size);
             }
         }
 
-        // Handle chmod
+        // Handle chmod (C: tup_fs_chmod, fuse_fs.c:1050-1087)
         if let Some(new_mode) = mode {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(new_mode);
-            let _ = std::fs::set_permissions(&real_path, perms);
+            let _ = std::fs::set_permissions(&target_path, perms);
         }
 
-        // Return updated attributes
-        match std::fs::symlink_metadata(&real_path) {
-            Ok(meta) => {
-                let attr = metadata_to_attr(ino, &meta);
-                reply.attr(&TTL, &attr);
+        // Handle chown (C: tup_fs_chown, fuse_fs.c:1090-1127)
+        if uid.is_some() || gid.is_some() {
+            let c_path = std::ffi::CString::new(target_path.to_string_lossy().as_bytes());
+            if let Ok(c_path) = c_path {
+                let new_uid = uid.map(|u| u as libc::uid_t).unwrap_or(u32::MAX);
+                let new_gid = gid.map(|g| g as libc::gid_t).unwrap_or(u32::MAX);
+                unsafe {
+                    libc::lchown(c_path.as_ptr(), new_uid, new_gid);
+                }
             }
+        }
+
+        match std::fs::symlink_metadata(&target_path) {
+            Ok(meta) => reply.attr(&TTL, &metadata_to_attr(ino, &meta)),
             Err(_) => reply.error(libc::EIO),
         }
     }
 
     /// Get filesystem statistics.
-    fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: fuser::ReplyStatfs) {
-        reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
+    /// Port of C tup's tup_fs_statfs() (fuse_fs.c:1396-1437).
+    fn statfs(&mut self, req: &Request<'_>, ino: u64, reply: fuser::ReplyStatfs) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
+        let path = self.inode_path(ino).unwrap_or_else(|| self.tup_top.clone());
+        let real_path = self.resolve_real_path(&path);
+        let c_path = match std::ffi::CString::new(real_path.to_string_lossy().as_bytes()) {
+            Ok(p) => p,
+            Err(_) => {
+                reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
+                return;
+            }
+        };
+        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
+        if fd < 0 {
+            reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
+            return;
+        }
+        let mut stbuf: libc::statvfs = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::fstatvfs(fd, &mut stbuf) };
+        unsafe { libc::close(fd) };
+        if rc == 0 {
+            reply.statfs(
+                stbuf.f_blocks as u64,
+                stbuf.f_bfree as u64,
+                stbuf.f_bavail as u64,
+                stbuf.f_files as u64,
+                stbuf.f_ffree as u64,
+                stbuf.f_bsize as u32,
+                stbuf.f_namemax as u32,
+                stbuf.f_frsize as u32,
+            );
+        } else {
+            reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
+        }
     }
 
     /// Flush is called on close — just return OK.
+    /// C: tup_fs_flush() (fuse_fs.c:1439-1454) — ensures data written before process exits.
     fn flush(
         &mut self,
         _req: &Request<'_>,
@@ -671,30 +1006,19 @@ impl Filesystem for TupFuseFs {
     /// Port of C tup's tup_fs_readdir() (fuse_fs.c:588-724).
     fn readdir(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         ino: u64,
         _fh: u64,
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let dir_path = match self.inode_path(ino) {
             Some(p) => p,
             None => {
-                reply.error(libc::ENOENT);
-                return;
-            }
-        };
-
-        // For @tupjob-N virtual dirs, show project root contents
-        let real_dir = if dir_path.to_string_lossy().contains(TUP_JOB) {
-            self.tup_top.clone()
-        } else {
-            dir_path.clone()
-        };
-
-        let entries = match std::fs::read_dir(&real_dir) {
-            Ok(rd) => rd,
-            Err(_) => {
                 reply.error(libc::ENOENT);
                 return;
             }
@@ -719,33 +1043,113 @@ impl Filesystem for TupFuseFs {
             }
         }
 
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let child_path = dir_path.join(&name);
-            let child_ino = self.get_or_create_inode(&child_path);
-            if let Ok(ft) = entry.file_type() {
-                let fuse_ft = if ft.is_dir() {
-                    FileType::Directory
-                } else if ft.is_symlink() {
-                    FileType::Symlink
-                } else {
-                    FileType::RegularFile
-                };
-                full_entries.push((child_ino, fuse_ft, name));
+        // Check if this is a tmpdir (if so, only show mapped files/sub-tmpdirs, not real dir)
+        let mut is_tmpdir = false;
+        let peeled = if let Some((_job_id, finfo_arc, peeled)) =
+            self.get_finfo_and_peeled(&dir_path)
+        {
+            if let Ok(finfo) = finfo_arc.lock() {
+                if finfo.tmpdirs.iter().any(|td| td == &peeled) {
+                    is_tmpdir = true;
+                }
+
+                // C: Add mapped files whose realname is in this directory
+                for (realname, mapping) in &finfo.mappings {
+                    let in_dir = if peeled == "." {
+                        !realname.contains('/')
+                    } else if let Some(rest) = realname.strip_prefix(&peeled) {
+                        rest.starts_with('/') && !rest[1..].contains('/')
+                    } else {
+                        false
+                    };
+                    if in_dir {
+                        let basename = realname.rsplit('/').next().unwrap_or(realname);
+                        // Stat the tmpname to get the file type
+                        if let Ok(meta) = std::fs::symlink_metadata(&mapping.tmpname) {
+                            let child_path = dir_path.join(basename);
+                            let child_ino = self.get_or_create_inode(&child_path);
+                            let ft = if meta.is_dir() {
+                                FileType::Directory
+                            } else if meta.is_symlink() {
+                                FileType::Symlink
+                            } else {
+                                FileType::RegularFile
+                            };
+                            full_entries.push((child_ino, ft, basename.to_string()));
+                        }
+                    }
+                }
+
+                // C: Add tmpdir subdirectories that are children of this directory
+                for tmpdir in &finfo.tmpdirs {
+                    let in_dir = if peeled == "." {
+                        !tmpdir.contains('/')
+                    } else if let Some(rest) = tmpdir.strip_prefix(&peeled) {
+                        rest.starts_with('/') && !rest[1..].contains('/')
+                    } else {
+                        false
+                    };
+                    if in_dir {
+                        let basename = tmpdir.rsplit('/').next().unwrap_or(tmpdir);
+                        let child_path = dir_path.join(basename);
+                        let child_ino = self.get_or_create_inode(&child_path);
+                        full_entries.push((child_ino, FileType::Directory, basename.to_string()));
+                    }
+                }
+            }
+            Some(peeled)
+        } else {
+            None
+        };
+
+        // If this IS a tmpdir, don't read the real directory (C: return 0 if is_tmpdir)
+        if !is_tmpdir {
+            // Record read access for dependency tracking
+            if peeled.is_some() {
+                self.record_access(ino, tup_types::AccessType::Read);
+            }
+
+            // Read real directory
+            let real_dir = self.resolve_real_path(&dir_path);
+            if let Ok(entries) = std::fs::read_dir(&real_dir) {
+                let is_inside_job = peeled.is_some();
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    // C: filter out .tup if inside a job
+                    if is_inside_job && name == ".tup" {
+                        continue;
+                    }
+                    let child_path = dir_path.join(&name);
+                    let child_ino = self.get_or_create_inode(&child_path);
+                    if let Ok(ft) = entry.file_type() {
+                        let fuse_ft = if ft.is_dir() {
+                            FileType::Directory
+                        } else if ft.is_symlink() {
+                            FileType::Symlink
+                        } else {
+                            FileType::RegularFile
+                        };
+                        full_entries.push((child_ino, fuse_ft, name));
+                    }
+                }
             }
         }
 
         for (i, (entry_ino, ft, name)) in full_entries.iter().enumerate().skip(offset as usize) {
             if reply.add(*entry_ino, (i + 1) as i64, *ft, name) {
-                break; // buffer full
+                break;
             }
         }
         reply.ok();
     }
 
     /// Open a file.
-    /// Port of C tup's tup_fs_open() (fuse_fs.c).
-    fn open(&mut self, _req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
+    /// Port of C tup's tup_fs_open() (fuse_fs.c:1260-1317).
+    fn open(&mut self, req: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let path = match self.inode_path(ino) {
             Some(p) => p,
             None => {
@@ -755,42 +1159,70 @@ impl Filesystem for TupFuseFs {
         };
 
         // Determine access type from flags
-        // C: if((fi->flags & O_RDWR) || (fi->flags & O_WRONLY)) at = ACCESS_WRITE
         let at = if (flags & libc::O_RDWR != 0) || (flags & libc::O_WRONLY != 0) {
             tup_types::AccessType::Write
         } else {
             tup_types::AccessType::Read
         };
-        self.record_access(ino, at);
 
-        // Actually open the file and return the FD as file handle.
-        // C: fd = openat(tup_top_fd(), openfile, fi->flags); fi->fh = fd;
-        let real_path = self.resolve_real_path(&path);
-        let c_path = match std::ffi::CString::new(real_path.to_string_lossy().as_bytes()) {
-            Ok(p) => p,
-            Err(_) => {
-                reply.error(libc::EINVAL);
+        // Check job mappings — open the tmpname if mapped
+        let open_path = if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&path)
+        {
+            if let Ok(mut finfo) = finfo_arc.lock() {
+                let mapped_path = if let Some(mapping) = finfo.find_mapping(&peeled) {
+                    Some(mapping.tmpname.clone())
+                } else if at == tup_types::AccessType::Write && !Self::is_hidden(&peeled) {
+                    // Write to unmapped file — create a mapping (C: FUSE3 path, lines 1285-1295)
+                    let tmpname = finfo.add_mapping(&format!("/{peeled}"), &self.tup_top);
+                    Some(tmpname)
+                } else {
+                    None
+                };
+
+                finfo.open_count += 1;
+
+                if let Some(p) = mapped_path {
+                    p
+                } else {
+                    self.resolve_real_path(&path)
+                }
+            } else {
+                reply.error(libc::EPERM);
                 return;
             }
-        };
-        let fd = unsafe { libc::open(c_path.as_ptr(), flags & !libc::O_NOFOLLOW) };
-        if fd < 0 {
-            reply.error(
-                std::io::Error::last_os_error()
-                    .raw_os_error()
-                    .unwrap_or(libc::EIO),
-            );
         } else {
-            reply.opened(fd as u64, 0);
+            reply.error(libc::EPERM);
+            return;
+        };
+
+        self.record_access(ino, at);
+
+        // C: fd = openat(tup_top_fd(), openfile, fi->flags)
+        match libc_open(&open_path, flags & !libc::O_NOFOLLOW, 0) {
+            Ok(fd) => {
+                // C: If open_count >= max_open_files, close fd and set fh=0
+                // (triggers fallback open in read/write) (fuse_fs.c:1302-1307)
+                if let Some((_jid, finfo_arc, _p)) = self.get_finfo_and_peeled(&path) {
+                    if let Ok(finfo) = finfo_arc.lock() {
+                        if finfo.open_count >= self.max_open_files {
+                            unsafe { libc::close(fd) };
+                            reply.opened(0, 0);
+                            return;
+                        }
+                    }
+                }
+                reply.opened(fd as u64, 0);
+            }
+            Err(e) => reply.error(e),
         }
     }
 
     /// Read data from a file.
-    /// Port of C tup's tup_fs_read() (fuse_fs.c).
+    /// Port of C tup's tup_fs_read() (fuse_fs.c:1319-1356).
     fn read(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         offset: i64,
         size: u32,
@@ -798,60 +1230,118 @@ impl Filesystem for TupFuseFs {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        // Use pread on the file handle from open()
-        // C: res = pread(fi->fh, buf, size, offset);
-        if fh > 0 {
-            let mut buf = vec![0u8; size as usize];
-            let n = unsafe {
-                libc::pread(
-                    fh as i32,
-                    buf.as_mut_ptr() as *mut libc::c_void,
-                    size as usize,
-                    offset,
-                )
+        let fd = if fh > 0 {
+            fh as i32
+        } else {
+            // Fallback: fh==0 means we ran out of FDs — open on the fly (C: lines 1325-1345)
+            let path = match self.inode_path(ino) {
+                Some(p) => p,
+                None => {
+                    reply.error(libc::EBADF);
+                    return;
+                }
             };
-            if n < 0 {
-                reply.error(
-                    std::io::Error::last_os_error()
-                        .raw_os_error()
-                        .unwrap_or(libc::EIO),
-                );
-            } else {
-                reply.data(&buf[..n as usize]);
+            let open_path =
+                if let Some((_jid, finfo_arc, peeled)) = self.get_finfo_and_peeled(&path) {
+                    if let Ok(finfo) = finfo_arc.lock() {
+                        if let Some(mapping) = finfo.find_mapping(&peeled) {
+                            mapping.tmpname.clone()
+                        } else {
+                            self.resolve_real_path(&path)
+                        }
+                    } else {
+                        self.resolve_real_path(&path)
+                    }
+                } else {
+                    self.resolve_real_path(&path)
+                };
+            match libc_open(&open_path, libc::O_RDONLY, 0) {
+                Ok(fd) => {
+                    // Read and close immediately
+                    let mut buf = vec![0u8; size as usize];
+                    let n = unsafe {
+                        libc::pread(
+                            fd,
+                            buf.as_mut_ptr() as *mut libc::c_void,
+                            size as usize,
+                            offset,
+                        )
+                    };
+                    unsafe { libc::close(fd) };
+                    if n < 0 {
+                        reply.error(
+                            std::io::Error::last_os_error()
+                                .raw_os_error()
+                                .unwrap_or(libc::EIO),
+                        );
+                    } else {
+                        reply.data(&buf[..n as usize]);
+                    }
+                    return;
+                }
+                Err(e) => {
+                    reply.error(e);
+                    return;
+                }
             }
-            return;
+        };
+
+        let mut buf = vec![0u8; size as usize];
+        let n = unsafe {
+            libc::pread(
+                fd,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                size as usize,
+                offset,
+            )
+        };
+        if n < 0 {
+            reply.error(
+                std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EIO),
+            );
+        } else {
+            reply.data(&buf[..n as usize]);
         }
-        // Fallback: no file handle — this shouldn't happen
-        reply.error(libc::EBADF);
     }
 
     /// Release (close) a file.
-    /// Port of C tup's tup_fs_release() (fuse_fs.c).
+    /// Port of C tup's tup_fs_release() (fuse_fs.c:1456-1471).
     fn release(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         _flags: i32,
         _lock_owner: Option<u64>,
         _flush: bool,
         reply: fuser::ReplyEmpty,
     ) {
-        // Close the file descriptor
-        // C: close(fi->fh); finfo->open_count--;
         if fh > 0 {
             unsafe { libc::close(fh as i32) };
+        }
+
+        // C: finfo->open_count--; pthread_cond_signal(&finfo->cond);
+        let path = self.inode_path(ino);
+        if let Some(path) = path {
+            if let Some((_job_id, finfo_arc, _peeled)) = self.get_finfo_and_peeled(&path) {
+                if let Ok(mut finfo) = finfo_arc.lock() {
+                    if finfo.open_count > 0 {
+                        finfo.open_count -= 1;
+                    }
+                }
+            }
         }
         reply.ok();
     }
 
     /// Write data to a file.
-    /// Port of C tup's tup_fs_write() (fuse_fs.c).
-    /// Writes go to the mapped temporary file, not the real output.
+    /// Port of C tup's tup_fs_write() (fuse_fs.c:1358-1394).
     fn write(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
+        ino: u64,
         fh: u64,
         offset: i64,
         data: &[u8],
@@ -860,44 +1350,84 @@ impl Filesystem for TupFuseFs {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
-        // Use pwrite on the file handle from open()/create()
-        // C: res = pwrite(fi->fh, buf, size, offset);
-        if fh > 0 {
-            let n = unsafe {
-                libc::pwrite(
-                    fh as i32,
-                    data.as_ptr() as *const libc::c_void,
-                    data.len(),
-                    offset,
-                )
+        let fd = if fh > 0 {
+            fh as i32
+        } else {
+            // Fallback: fh==0 — open mapped tmpname on the fly (C: lines 1364-1393)
+            let path = match self.inode_path(ino) {
+                Some(p) => p,
+                None => {
+                    reply.error(libc::EBADF);
+                    return;
+                }
             };
-            if n < 0 {
-                reply.error(
-                    std::io::Error::last_os_error()
-                        .raw_os_error()
-                        .unwrap_or(libc::EIO),
-                );
-            } else {
-                reply.written(n as u32);
+            if let Some((_jid, finfo_arc, peeled)) = self.get_finfo_and_peeled(&path) {
+                if let Ok(finfo) = finfo_arc.lock() {
+                    if let Some(mapping) = finfo.find_mapping(&peeled) {
+                        match libc_open(&mapping.tmpname, libc::O_WRONLY, 0) {
+                            Ok(fd) => {
+                                let n = unsafe {
+                                    libc::pwrite(
+                                        fd,
+                                        data.as_ptr() as *const libc::c_void,
+                                        data.len(),
+                                        offset,
+                                    )
+                                };
+                                unsafe { libc::close(fd) };
+                                if n < 0 {
+                                    reply.error(
+                                        std::io::Error::last_os_error()
+                                            .raw_os_error()
+                                            .unwrap_or(libc::EIO),
+                                    );
+                                } else {
+                                    reply.written(n as u32);
+                                }
+                                return;
+                            }
+                            Err(e) => {
+                                reply.error(e);
+                                return;
+                            }
+                        }
+                    }
+                }
             }
+            reply.error(libc::EPERM);
             return;
+        };
+
+        let n =
+            unsafe { libc::pwrite(fd, data.as_ptr() as *const libc::c_void, data.len(), offset) };
+        if n < 0 {
+            reply.error(
+                std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EIO),
+            );
+        } else {
+            reply.written(n as u32);
         }
-        reply.error(libc::EBADF);
     }
 
     /// Create and open a file.
     /// Port of C tup's tup_fs_create() (fuse_fs.c:1239-1258).
-    /// Creates the file (via mknod_internal logic) then opens it.
+    /// Creates a mapping to .tup/tmp/ and opens the temp file.
     fn create(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
-        _mode: u32,
+        mode: u32,
         _umask: u32,
-        _flags: i32,
+        flags: i32,
         reply: ReplyCreate,
     ) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let parent_path = match self.inode_path(parent) {
             Some(p) => p,
             None => {
@@ -907,51 +1437,63 @@ impl Filesystem for TupFuseFs {
         };
 
         let child_path = parent_path.join(name);
-        let real_child = self.resolve_real_path(&child_path);
 
-        // Create and open the file, returning the FD as file handle.
-        // C: mknod_internal(path, mode, fi->flags, 0) → rc = openat(...)
-        let c_path = match std::ffi::CString::new(real_child.to_string_lossy().as_bytes()) {
-            Ok(p) => p,
-            Err(_) => {
-                reply.error(libc::EINVAL);
-                return;
+        // Create mapping and open the tmpfile
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&child_path) {
+            let tmpname = {
+                let mut finfo = match finfo_arc.lock() {
+                    Ok(f) => f,
+                    Err(_) => {
+                        reply.error(libc::EIO);
+                        return;
+                    }
+                };
+                let tmpname = finfo.add_mapping(&format!("/{peeled}"), &self.tup_top);
+                finfo.open_count += 1;
+                tmpname
+            };
+
+            // C: mknod_internal → openat(tup_top_fd(), map->tmpname, flags, mode)
+            match libc_open(
+                &tmpname,
+                flags | libc::O_CREAT | libc::O_TRUNC,
+                mode as libc::mode_t,
+            ) {
+                Ok(fd) => {
+                    let ino = self.get_or_create_inode(&child_path);
+                    if let Ok(meta) = std::fs::symlink_metadata(&tmpname) {
+                        let attr = metadata_to_attr(ino, &meta);
+                        // C: If open_count >= max_open_files, close fd, set fh=0
+                        // (fuse_fs.c:1248-1253)
+                        let fh = if let Ok(finfo) = finfo_arc.lock() {
+                            if finfo.open_count >= self.max_open_files {
+                                unsafe { libc::close(fd) };
+                                0u64
+                            } else {
+                                fd as u64
+                            }
+                        } else {
+                            fd as u64
+                        };
+                        reply.created(&TTL, &attr, 0, fh, 0);
+                    } else {
+                        unsafe { libc::close(fd) };
+                        reply.error(libc::EIO);
+                    }
+                }
+                Err(e) => reply.error(e),
             }
-        };
-        let fd = unsafe {
-            libc::open(
-                c_path.as_ptr(),
-                libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC,
-                0o644,
-            )
-        };
-        if fd < 0 {
-            reply.error(
-                std::io::Error::last_os_error()
-                    .raw_os_error()
-                    .unwrap_or(libc::EIO),
-            );
-            return;
-        }
-        let ino = self.get_or_create_inode(&child_path);
-        self.record_access(ino, tup_types::AccessType::Write);
-        match std::fs::symlink_metadata(&real_child) {
-            Ok(meta) => {
-                let attr = metadata_to_attr(ino, &meta);
-                reply.created(&TTL, &attr, 0, fd as u64, 0);
-            }
-            Err(_) => {
-                unsafe { libc::close(fd) };
-                reply.error(libc::EIO);
-            }
+        } else {
+            reply.error(libc::EPERM);
         }
     }
 
     /// Create a file node.
     /// Port of C tup's mknod_internal() (fuse_fs.c:725-800).
+    /// Creates a mapping to .tup/tmp/ and creates the temp file.
     fn mknod(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -959,6 +1501,10 @@ impl Filesystem for TupFuseFs {
         _rdev: u32,
         reply: ReplyEntry,
     ) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let parent_path = match self.inode_path(parent) {
             Some(p) => p,
             None => {
@@ -970,7 +1516,6 @@ impl Filesystem for TupFuseFs {
         let child_path = parent_path.join(name);
 
         // C: Only regular files, FIFOs, and sockets are allowed.
-        // Device nodes are rejected with EPERM.
         let file_mode = mode & libc::S_IFMT as u32;
         if file_mode != libc::S_IFREG as u32
             && file_mode != libc::S_IFIFO as u32
@@ -984,35 +1529,56 @@ impl Filesystem for TupFuseFs {
             return;
         }
 
-        let real_child = self.resolve_real_path(&child_path);
-        match std::fs::File::create(&real_child) {
-            Ok(_) => {
-                let ino = self.get_or_create_inode(&child_path);
-                match std::fs::symlink_metadata(&real_child) {
-                    Ok(meta) => {
-                        let attr = metadata_to_attr(ino, &meta);
-                        reply.entry(&TTL, &attr, 0);
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&child_path) {
+            let tmpname = {
+                let mut finfo = match finfo_arc.lock() {
+                    Ok(f) => f,
+                    Err(_) => {
+                        reply.error(libc::EIO);
+                        return;
                     }
-                    Err(_) => reply.error(libc::EIO),
+                };
+                finfo.add_mapping(&format!("/{peeled}"), &self.tup_top)
+            };
+
+            // Create the temp file and close it (mknod doesn't keep it open)
+            match libc_open(
+                &tmpname,
+                libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY,
+                mode as libc::mode_t,
+            ) {
+                Ok(fd) => {
+                    unsafe { libc::close(fd) };
+                    let ino = self.get_or_create_inode(&child_path);
+                    if let Ok(meta) = std::fs::symlink_metadata(&tmpname) {
+                        reply.entry(&TTL, &metadata_to_attr(ino, &meta), 0);
+                    } else {
+                        reply.error(libc::EIO);
+                    }
                 }
+                Err(e) => reply.error(e),
             }
-            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        } else {
+            reply.error(libc::EPERM);
         }
     }
 
     /// Create a directory.
     /// Port of C tup's tup_fs_mkdir() (fuse_fs.c:808-854).
-    /// In tup's FUSE, directories are virtual — tracked in tmpdir_list,
-    /// not actually created on the real filesystem.
+    /// Directories are virtual — tracked in FileInfo::tmpdirs, not created on real filesystem.
     fn mkdir(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
-        mode: u32,
+        _mode: u32,
         _umask: u32,
         reply: ReplyEntry,
     ) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let parent_path = match self.inode_path(parent) {
             Some(p) => p,
             None => {
@@ -1023,51 +1589,32 @@ impl Filesystem for TupFuseFs {
 
         let child_path = parent_path.join(name);
 
-        // C: For ignored paths (ccache etc), do real mkdir
-        let rel = child_path
-            .strip_prefix(&self.tup_top)
-            .unwrap_or(&child_path)
-            .to_string_lossy();
-        if Self::should_ignore(&format!("/{rel}")) {
-            match std::fs::create_dir_all(&child_path) {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => {
-                    reply.error(e.raw_os_error().unwrap_or(libc::EIO));
-                    return;
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&child_path) {
+            // C: For ignored paths (ccache, /dev, /proc, /sys), do real mkdir
+            if Self::should_ignore(&format!("/{peeled}")) {
+                let real_child = self.resolve_real_path(&child_path);
+                let _ = std::fs::create_dir_all(&real_child);
+            } else {
+                // Virtual directory — add to tmpdir_list (C: fuse_fs.c:833-851)
+                if let Ok(mut finfo) = finfo_arc.lock() {
+                    finfo.tmpdirs.push(peeled);
                 }
             }
+            let ino = self.get_or_create_inode(&child_path);
+            reply.entry(&TTL, &synthetic_dir_attr(ino), 0);
+        } else {
+            reply.error(libc::EPERM);
         }
-        // else: C tracks in tmpdir_list (virtual dir)
-        // TODO: Wire to FileInfo tmpdir_list when integrated with updater (WP6)
-
-        // Create real dir for now (will be virtual when FUSE is fully wired)
-        let real_child = self.resolve_real_path(&child_path);
-        let _ = std::fs::create_dir_all(&real_child);
-        let ino = self.get_or_create_inode(&child_path);
-        let attr = FileAttr {
-            ino,
-            size: 0,
-            blocks: 0,
-            atime: SystemTime::now(),
-            mtime: SystemTime::now(),
-            ctime: SystemTime::now(),
-            crtime: SystemTime::now(),
-            kind: FileType::Directory,
-            perm: (mode & 0o7777) as u16,
-            nlink: 2,
-            uid: unsafe { libc::getuid() },
-            gid: unsafe { libc::getgid() },
-            rdev: 0,
-            blksize: 4096,
-            flags: 0,
-        };
-        reply.entry(&TTL, &attr, 0);
     }
 
     /// Remove a file.
     /// Port of C tup's tup_fs_unlink() (fuse_fs.c:856-890).
-    fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
+    /// Only allows unlinking mapped files (created during this job).
+    fn unlink(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let parent_path = match self.inode_path(parent) {
             Some(p) => p,
             None => {
@@ -1078,20 +1625,48 @@ impl Filesystem for TupFuseFs {
 
         let child_path = parent_path.join(name);
 
-        // Record unlink access before removing
-        let ino = self.get_or_create_inode(&child_path);
-        self.record_access(ino, tup_types::AccessType::Unlink);
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&child_path) {
+            if let Ok(mut finfo) = finfo_arc.lock() {
+                // Check if this file has a mapping (was created during this job)
+                if let Some(mapping) = finfo.mappings.remove(&peeled) {
+                    // Delete the tmpfile
+                    let _ = std::fs::remove_file(&mapping.tmpname);
+                    drop(finfo);
+                    // Record unlink access
+                    let ino = self.get_or_create_inode(&child_path);
+                    self.record_access(ino, tup_types::AccessType::Unlink);
+                    reply.ok();
+                    return;
+                }
+            }
 
-        let real_child = self.resolve_real_path(&child_path);
-        match std::fs::remove_file(&real_child) {
-            Ok(_) => reply.ok(),
-            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+            // C: .fuse_hidden workaround (fuse_fs.c:876-887)
+            let name_str = name.to_string_lossy();
+            if name_str.contains(".fuse_hidden") {
+                let real_child = self.resolve_real_path(&child_path);
+                let _ = std::fs::remove_file(&real_child);
+                reply.ok();
+                return;
+            }
+
+            eprintln!(
+                "tup error: Unable to unlink files not created during this job: {}",
+                Self::peel(&child_path.to_string_lossy())
+            );
+            reply.error(libc::EPERM);
+        } else {
+            reply.error(libc::EPERM);
         }
     }
 
     /// Remove a directory.
     /// Port of C tup's tup_fs_rmdir() (fuse_fs.c:892-935).
-    fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
+    /// Only allows removing virtual tmpdirs.
+    fn rmdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: fuser::ReplyEmpty) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let parent_path = match self.inode_path(parent) {
             Some(p) => p,
             None => {
@@ -1101,24 +1676,62 @@ impl Filesystem for TupFuseFs {
         };
 
         let child_path = parent_path.join(name);
-        let real_child = self.resolve_real_path(&child_path);
 
-        match std::fs::remove_dir(&real_child) {
-            Ok(_) => reply.ok(),
-            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&child_path) {
+            if let Ok(mut finfo) = finfo_arc.lock() {
+                // C: Check for subdirectories (ENOTEMPTY)
+                let has_subdir = finfo.tmpdirs.iter().any(|td| {
+                    td.starts_with(&peeled)
+                        && td.len() > peeled.len()
+                        && td.as_bytes()[peeled.len()] == b'/'
+                });
+                if has_subdir {
+                    reply.error(libc::ENOTEMPTY);
+                    return;
+                }
+                // C: Check for files in the directory (ENOTEMPTY)
+                let has_files = finfo.mappings.keys().any(|rn| {
+                    rn.starts_with(&peeled)
+                        && rn.len() > peeled.len()
+                        && rn.as_bytes()[peeled.len()] == b'/'
+                });
+                if has_files {
+                    reply.error(libc::ENOTEMPTY);
+                    return;
+                }
+
+                // Remove the tmpdir entry
+                if let Some(pos) = finfo.tmpdirs.iter().position(|td| td == &peeled) {
+                    finfo.tmpdirs.remove(pos);
+                    reply.ok();
+                    return;
+                }
+            }
+            eprintln!(
+                "tup error: Unable to rmdir a directory not created during this job: {}",
+                Self::peel(&child_path.to_string_lossy())
+            );
+            reply.error(libc::EPERM);
+        } else {
+            reply.error(libc::EPERM);
         }
     }
 
     /// Create a symbolic link.
     /// Port of C tup's tup_fs_symlink() (fuse_fs.c:937-955).
+    /// Creates a mapping and the symlink at the tmpname.
     fn symlink(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         link_name: &OsStr,
         target: &Path,
         reply: ReplyEntry,
     ) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let parent_path = match self.inode_path(parent) {
             Some(p) => p,
             None => {
@@ -1129,17 +1742,72 @@ impl Filesystem for TupFuseFs {
 
         let link_path = parent_path.join(link_name);
 
-        #[cfg(unix)]
-        match std::os::unix::fs::symlink(target, &link_path) {
-            Ok(_) => {
-                let ino = self.get_or_create_inode(&link_path);
-                match std::fs::symlink_metadata(&link_path) {
-                    Ok(meta) => {
-                        let attr = metadata_to_attr(ino, &meta);
-                        reply.entry(&TTL, &attr, 0);
+        if let Some((_job_id, finfo_arc, peeled)) = self.get_finfo_and_peeled(&link_path) {
+            let tmpname = {
+                let mut finfo = match finfo_arc.lock() {
+                    Ok(f) => f,
+                    Err(_) => {
+                        reply.error(libc::EIO);
+                        return;
                     }
-                    Err(_) => reply.error(libc::EIO),
+                };
+                finfo.add_mapping(&format!("/{peeled}"), &self.tup_top)
+            };
+
+            // C: symlinkat(from, tup_top_fd(), tomap->tmpname)
+            #[cfg(unix)]
+            match std::os::unix::fs::symlink(target, &tmpname) {
+                Ok(_) => {
+                    let ino = self.get_or_create_inode(&link_path);
+                    if let Ok(meta) = std::fs::symlink_metadata(&tmpname) {
+                        reply.entry(&TTL, &metadata_to_attr(ino, &meta), 0);
+                    } else {
+                        reply.error(libc::EIO);
+                    }
                 }
+                Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
+            }
+        } else {
+            reply.error(libc::EPERM);
+        }
+    }
+
+    /// Read a symbolic link target.
+    /// Port of C tup's tup_fs_readlink() (fuse_fs.c:497-539).
+    fn readlink(&mut self, req: &Request<'_>, ino: u64, reply: fuser::ReplyData) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
+        let path = match self.inode_path(ino) {
+            Some(p) => p,
+            None => {
+                reply.error(libc::ENOENT);
+                return;
+            }
+        };
+
+        // Check mappings — readlink the tmpname if mapped
+        let read_path = if let Some((_jid, finfo_arc, peeled)) = self.get_finfo_and_peeled(&path) {
+            if let Ok(finfo) = finfo_arc.lock() {
+                if let Some(mapping) = finfo.find_mapping(&peeled) {
+                    mapping.tmpname.clone()
+                } else {
+                    self.resolve_real_path(&path)
+                }
+            } else {
+                self.resolve_real_path(&path)
+            }
+        } else {
+            self.resolve_real_path(&path)
+        };
+
+        // Record read access
+        self.record_access(ino, tup_types::AccessType::Read);
+
+        match std::fs::read_link(&read_path) {
+            Ok(target) => {
+                reply.data(target.to_string_lossy().as_bytes());
             }
             Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
         }
@@ -1147,9 +1815,10 @@ impl Filesystem for TupFuseFs {
 
     /// Rename a file.
     /// Port of C tup's tup_fs_rename() (fuse_fs.c:957-1039).
+    /// Works with mappings: renames the mapping's realname.
     fn rename(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         newparent: u64,
@@ -1157,6 +1826,10 @@ impl Filesystem for TupFuseFs {
         _flags: u32,
         reply: fuser::ReplyEmpty,
     ) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         let old_parent = match self.inode_path(parent) {
             Some(p) => p,
             None => {
@@ -1174,32 +1847,71 @@ impl Filesystem for TupFuseFs {
 
         let old_path = old_parent.join(name);
         let new_path = new_parent.join(newname);
-        let real_old = self.resolve_real_path(&old_path);
-        let real_new = self.resolve_real_path(&new_path);
 
-        match std::fs::rename(&real_old, &real_new) {
-            Ok(_) => {
-                // Update inode mapping
-                if let Some(ino) = self.path_to_inode.write().unwrap().remove(&old_path) {
-                    self.inodes.write().unwrap().insert(ino, new_path.clone());
-                    self.path_to_inode.write().unwrap().insert(new_path, ino);
+        if let Some((_job_id, finfo_arc, peeled_from)) = self.get_finfo_and_peeled(&old_path) {
+            let full_new = format!("/{}", new_path.to_string_lossy().trim_start_matches('/'));
+            let peeled_to = Self::peel(&full_new).trim_start_matches('/').to_string();
+
+            if let Ok(mut finfo) = finfo_arc.lock() {
+                // C: Check if renaming a tmpdir — just update the dirname
+                if let Some(pos) = finfo.tmpdirs.iter().position(|td| td == &peeled_from) {
+                    finfo.tmpdirs[pos] = peeled_to;
+                    reply.ok();
+                    return;
                 }
-                reply.ok();
+
+                // C: If destination already has a mapping, delete the old tmpfile
+                if let Some(old_dest_mapping) = finfo.mappings.remove(&peeled_to) {
+                    let _ = std::fs::remove_file(&old_dest_mapping.tmpname);
+                }
+
+                // C: Look up source mapping
+                if let Some(mut src_mapping) = finfo.mappings.remove(&peeled_from) {
+                    let newname_str = newname.to_string_lossy();
+                    if newname_str.contains(".fuse_hidden") {
+                        // C: Treat as unlink (fuse_fs.c:1013-1023)
+                        let _ = std::fs::remove_file(&src_mapping.tmpname);
+                        drop(finfo);
+                        let ino = self.get_or_create_inode(&old_path);
+                        self.record_access(ino, tup_types::AccessType::Unlink);
+                    } else {
+                        // Update the mapping's realname
+                        src_mapping.realname = peeled_to.clone();
+                        finfo.handle_rename(&peeled_from, &peeled_to);
+                        finfo.mappings.insert(peeled_to, src_mapping);
+                    }
+                    reply.ok();
+                    return;
+                }
+
+                // Not mapped — error
+                reply.error(libc::ENOENT);
+                return;
             }
-            Err(e) => reply.error(e.raw_os_error().unwrap_or(libc::EIO)),
         }
+
+        // Update inode mapping
+        if let Some(ino) = self.path_to_inode.write().unwrap().remove(&old_path) {
+            self.inodes.write().unwrap().insert(ino, new_path.clone());
+            self.path_to_inode.write().unwrap().insert(new_path, ino);
+        }
+        reply.ok();
     }
 
     /// Hard links are not supported.
     /// Port of C tup's tup_fs_link() (fuse_fs.c:1041-1047).
     fn link(
         &mut self,
-        _req: &Request<'_>,
+        req: &Request<'_>,
         _ino: u64,
         _newparent: u64,
         _newname: &OsStr,
         reply: ReplyEntry,
     ) {
+        if !self.context_check(req) {
+            reply.error(libc::EPERM);
+            return;
+        }
         eprintln!("tup error: hard links are not supported.");
         reply.error(libc::EPERM);
     }
@@ -1299,11 +2011,16 @@ mod tests {
 
     #[test]
     fn test_handle_rename() {
-        // C: handle_rename(from, to, info) → unlink(from) + write(to)
+        // C: handle_rename() renames write_list/read_list entries in-place
         let mut finfo = FileInfo::new();
+        finfo.handle_open_file(AccessType::Write, "old.txt");
+        finfo.handle_open_file(AccessType::Read, "old.txt");
         finfo.handle_rename("old.txt", "new.txt");
-        assert_eq!(finfo.unlink_list, vec!["old.txt"]);
+        // write_list and read_list entries should be renamed
         assert_eq!(finfo.write_list, vec!["new.txt"]);
+        assert_eq!(finfo.read_list, vec!["new.txt"]);
+        // unlink_list should have "new.txt" removed (check_unlink_list)
+        assert!(finfo.unlink_list.is_empty());
     }
 
     #[test]
@@ -1312,23 +2029,26 @@ mod tests {
         let mut finfo = FileInfo::new();
         finfo.handle_file(AccessType::Read, "input.c", "");
         finfo.handle_file(AccessType::Write, "output.o", "");
+        // For rename: first the file must exist in a list
+        finfo.handle_open_file(AccessType::Write, "old.txt");
         finfo.handle_file(AccessType::Rename, "old.txt", "new.txt");
         assert_eq!(finfo.read_list, vec!["input.c"]);
         assert_eq!(finfo.write_list, vec!["output.o", "new.txt"]);
-        assert_eq!(finfo.unlink_list, vec!["old.txt"]);
     }
 
     #[test]
     fn test_handle_unlink_processing() {
-        // C: handle_unlink() removes unlinks that were also written
+        // C: handle_unlink() for each unlinked file, removes from write_list AND read_list
         let mut finfo = FileInfo::new();
-        finfo.handle_open_file(AccessType::Unlink, "keep.txt");
-        finfo.handle_open_file(AccessType::Unlink, "recreated.txt");
-        finfo.handle_open_file(AccessType::Write, "recreated.txt");
-        // Note: write already clears matching unlinks via check_unlink_list
-        // But handle_unlink() does a final pass
+        finfo.handle_open_file(AccessType::Write, "keep.o");
+        finfo.handle_open_file(AccessType::Read, "deleted.c");
+        finfo.handle_open_file(AccessType::Write, "deleted.c");
+        finfo.handle_open_file(AccessType::Unlink, "deleted.c");
         finfo.handle_unlink();
-        assert_eq!(finfo.unlink_list, vec!["keep.txt"]);
+        // "deleted.c" should be removed from both write_list and read_list
+        assert_eq!(finfo.write_list, vec!["keep.o"]);
+        assert!(finfo.read_list.is_empty());
+        assert!(finfo.unlink_list.is_empty());
     }
 
     #[test]

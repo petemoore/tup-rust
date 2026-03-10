@@ -153,10 +153,34 @@ impl FuseMount {
         finfo
     }
 
-    /// Unregister a job after execution completes.
+    /// Wait for all open file descriptors to be released, then unregister.
     ///
-    /// Port of C tup's tup_fuse_rm_group(&s->finfo).
+    /// Port of C tup's finfo_wait_open_count() (fuse_server.c:433-462)
+    /// followed by tup_fuse_rm_group(&s->finfo).
+    ///
+    /// After a command finishes, FUSE may still have pending release() calls.
+    /// We wait up to 10 seconds for open_count to reach 0 before proceeding.
     pub fn unregister_job(&self, job_id: i64) {
+        // C: finfo_wait_open_count() — wait for open_count == 0
+        if let Some(finfo_arc) = self.jobs.read().unwrap().get(&job_id).cloned() {
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(10);
+            loop {
+                if let Ok(finfo) = finfo_arc.lock() {
+                    if finfo.open_count <= 0 {
+                        break;
+                    }
+                }
+                if start.elapsed() >= timeout {
+                    eprintln!(
+                        "tup error: FUSE did not appear to release all file descriptors \
+                         after the sub-process closed."
+                    );
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
         self.jobs.write().unwrap().remove(&job_id);
     }
 

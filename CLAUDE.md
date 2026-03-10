@@ -36,6 +36,11 @@ solutions from scratch. The C implementation has already solved every problem.
 5. **Match SQL queries** — the DB schema is identical; queries should be too
 6. **Match the update phases** — C has: scan → config → create → modify → execute
 7. **If unsure, check C first** — never guess when the answer is in the source
+8. **Preserve the architecture** — if C uses a thread, use a thread. If C uses fork,
+   use fork. If C uses a socket, use a socket. Do NOT substitute different paradigms
+   (e.g. don't replace a notifier thread with inline reads, don't replace fork with
+   std::process::Command, don't replace socketpair with channels). The C code has
+   been tested and debugged for years — changing the paradigm introduces new bugs.
 
 The C source at `~/git/tup/src/tup/` is the specification. The 989 test scripts
 are the acceptance criteria. When in doubt, run `VERBOSE=1 ./tests/compat/run_tests.sh tNNNN`

@@ -633,6 +633,24 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
         cmd_id_map.push((dir_path, cmd.cmd_id));
     }
 
+    // Create master_fork child process BEFORE FUSE mount.
+    // C: server_pre_init() (master_fork.c:150-261) — fork a persistent child
+    // that will later execute commands via chdir(job)+chdir(dir)+exec.
+    // This must happen before the FUSE mount so the child process can
+    // chdir() into the FUSE mount correctly on macOS.
+    #[cfg(unix)]
+    let _master_fork: Option<std::sync::Arc<tup_server::MasterFork>> =
+        match tup_server::MasterFork::pre_init() {
+            Ok(mf) => {
+                log::debug!("master_fork child process created");
+                Some(std::sync::Arc::new(mf))
+            }
+            Err(e) => {
+                log::debug!("master_fork not available: {e}");
+                None
+            }
+        };
+
     // Mount FUSE for automatic dependency tracking (if available)
     // C: server_init(SERVER_UPDATER_MODE) before command execution
     #[cfg(feature = "fuse")]
@@ -655,48 +673,51 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     let mut _next_job_id: i64 = 1;
 
     for (dir_path, rules) in &dir_rule_groups {
-        // Register FUSE job and redirect CWD through FUSE mount.
-        // C: server_exec() registers job, executes in @tupjob-N dir.
-        // Register FUSE job and open the virtual directory FD.
-        // C: virt_tup_open() opens @tupjob-N via openat(), child uses fchdir(fd).
+        // Register FUSE job and set up CWD through FUSE mount.
+        // C: server_exec() → exec_internal() → chdir(job) + chdir(dir)
         #[cfg(feature = "fuse")]
-        let (_fuse_finfo, fuse_fd) = if let Some(ref fuse) = _fuse_mount {
+        let (_fuse_finfo, fuse_job_dir) = if let Some(ref fuse) = _fuse_mount {
             let job_id = _next_job_id;
             _next_job_id += 1;
             let finfo = fuse.register_job(job_id);
-            let fuse_dir = fuse.job_path(job_id, dir_path);
-            // Open the FUSE directory to get an FD for fchdir.
-            // Use libc::open directly to ensure the path goes through FUSE.
-            // C: fd = openat(tup_top_fd(), TUP_MNT, O_RDONLY);
-            //    fd = re_openat(fd, "@tupjob-N");
-            //    root_fd = re_openat(fd, get_tup_top()+1);
-            let fd = {
-                let c_path = std::ffi::CString::new(fuse_dir.to_string_lossy().as_bytes()).ok();
-                c_path.and_then(|p| {
-                    let fd = unsafe { libc::open(p.as_ptr(), libc::O_RDONLY) };
-                    if fd >= 0 {
-                        Some(fd)
-                    } else {
-                        None
-                    }
-                })
+            // C: job = ".tup/mnt/@tupjob-N", dir = get_tup_top()+1 + subdir
+            // The job path MUST be relative — absolute paths bypass FUSE on macOS.
+            // C does: chdir(".tup/mnt/@tupjob-N") then chdir("Users/.../project/subdir")
+            let job = std::path::PathBuf::from(format!(".tup/mnt/@tupjob-{job_id}"));
+            // dir = tup_top path (minus leading /) + relative subdir
+            // C: strncpy(dir, get_tup_top() + 1, ...) + snprint_tup_entry(dir + len, dtent)
+            let tup_top_rel = tup_root
+                .to_string_lossy()
+                .trim_start_matches('/')
+                .to_string();
+            let subdir_rel = dir_path
+                .strip_prefix(&tup_root)
+                .unwrap_or(std::path::Path::new(""));
+            let dir = if subdir_rel.as_os_str().is_empty() {
+                std::path::PathBuf::from(&tup_top_rel)
+            } else {
+                std::path::PathBuf::from(format!("{}/{}", tup_top_rel, subdir_rel.display()))
             };
-            (Some((job_id, finfo)), fd)
+            log::debug!("FUSE job={} dir={}", job.display(), dir.display());
+            // Pass both as a (job, dir) tuple packed into a single PathBuf
+            // by joining them — the executor will chdir(job) then chdir(dir)
+            (Some((job_id, finfo)), Some((job, dir)))
         } else {
             (None, None)
         };
         #[cfg(not(feature = "fuse"))]
-        let fuse_fd: Option<i32> = None;
+        let fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
 
-        let (run, failed) = execute_dir_rules(dir_path, rules, keep_going, num_jobs, fuse_fd)?;
+        let (run, failed) = execute_dir_rules(
+            dir_path,
+            rules,
+            keep_going,
+            num_jobs,
+            fuse_job_dir,
+            &_master_fork,
+        )?;
         total_run += run;
         total_failed += failed;
-
-        // Close the FUSE directory FD
-        #[cfg(feature = "fuse")]
-        if let Some(fd) = fuse_fd {
-            unsafe { libc::close(fd) };
-        }
 
         // Unregister FUSE job and record dependencies in DB
         #[cfg(feature = "fuse")]
@@ -724,6 +745,22 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
                     }
                 }
             }
+        }
+    }
+
+    // Shut down master_fork child process.
+    // C: server_post_exit() (master_fork.c:263-294) — send shutdown message,
+    // wait for child to exit. Must happen before FUSE unmount.
+    #[cfg(unix)]
+    if let Some(mf) = _master_fork {
+        // Need to unwrap from Arc — only works if no other references remain.
+        // The Updater clones were dropped when execute_dir_rules returned.
+        if let Ok(mf) = std::sync::Arc::try_unwrap(mf) {
+            if let Err(e) = mf.shutdown() {
+                eprintln!("tup warning: master_fork shutdown failed: {e}");
+            }
+        } else {
+            log::debug!("master_fork has extra references, skipping explicit shutdown");
         }
     }
 
@@ -976,20 +1013,29 @@ fn try_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
     ))
 }
 
+#[allow(unused_variables)]
 fn execute_dir_rules(
     work_dir: &Path,
     rules: &[tup_parser::Rule],
     keep_going: bool,
     num_jobs: usize,
-    #[allow(unused_variables)] fuse_cwd_fd: Option<i32>,
+    fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    master_fork: &Option<std::sync::Arc<tup_server::MasterFork>>,
 ) -> anyhow::Result<(usize, usize)> {
     let mut updater = tup_updater::Updater::new(work_dir);
     updater.set_keep_going(keep_going);
 
-    // Use fchdir for FUSE CWD if available
+    // Set FUSE job + dir for command CWD (C: chdir(job) then chdir(dir))
     #[cfg(unix)]
-    if let Some(fd) = fuse_cwd_fd {
-        updater.set_fuse_cwd_fd(fd);
+    if let Some((job, dir)) = fuse_job_dir {
+        updater.set_fuse_job_dir(job, dir);
+    }
+
+    // Set master_fork handle for FUSE command execution.
+    // C: master_fork_exec() routes commands through the pre-forked child.
+    #[cfg(unix)]
+    if let Some(ref mf) = master_fork {
+        updater.set_master_fork(std::sync::Arc::clone(mf));
     }
 
     // Use pre-expanded execution since expand_rules_for_dir already
@@ -1895,12 +1941,11 @@ fn cmd_server() {
             return;
         }
     }
-    #[cfg(target_os = "linux")]
-    {
+    if cfg!(target_os = "linux") {
         println!("ldpreload");
-        return;
+    } else {
+        println!("none");
     }
-    println!("none");
 }
 
 // -- Testing/debugging commands --
