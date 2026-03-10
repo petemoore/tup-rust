@@ -79,4 +79,8 @@ All → tup-cli
 
 - Repo: petemoore/tup-rust
 - PRs: one per PLAN.md item, merge to main
-- Branch naming: `pr/NN-short-description`
+- Branch naming: `pr/short-description`
+- **Branch protections are enabled on `main`** — CI must pass before merging
+- After creating a PR, wait for CI checks to complete (`gh pr checks <number>`)
+- After merging, verify with `gh pr view <number> --json state` that state is "MERGED"
+- If CI fails, check logs with `gh run view --log-failed --job=<job-id>`, fix, push, and wait for CI again
