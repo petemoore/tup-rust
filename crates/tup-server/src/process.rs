@@ -224,11 +224,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let server = ProcessServer::new(tmp.path(), ServerMode::None);
 
+        // Use platform-appropriate env var expansion
+        #[cfg(unix)]
+        let cmd = "echo $MY_VAR > out.txt";
+        #[cfg(windows)]
+        let cmd = "echo %MY_VAR% > out.txt";
+
         let result = server
-            .exec(
-                "echo $MY_VAR > out.txt",
-                &[("MY_VAR".to_string(), "env_value".to_string())],
-            )
+            .exec(cmd, &[("MY_VAR".to_string(), "env_value".to_string())])
             .unwrap();
 
         assert!(result.success);
