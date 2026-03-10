@@ -46,11 +46,12 @@ pub struct Updater {
     commands_failed: usize,
     /// Total expected commands (set before execution for progress).
     total_expected: usize,
-    /// Optional file descriptor for FUSE CWD.
-    /// When set, commands use fchdir(fd) instead of chdir(work_dir).
-    /// Port of C tup's virt_tup_open() which opens @tupjob-N via FUSE.
+    /// Optional FUSE job directory path (e.g., `.tup/mnt/@tupjob-N`).
+    /// When set, commands chdir to this path first, then chdir to the
+    /// relative work_dir within the FUSE mount.
+    /// Port of C tup's exec_internal: chdir(job) then chdir(dir).
     #[cfg(unix)]
-    fuse_cwd_fd: Option<i32>,
+    fuse_job_dir: Option<PathBuf>,
 }
 
 impl Updater {
@@ -63,16 +64,15 @@ impl Updater {
             commands_failed: 0,
             total_expected: 0,
             #[cfg(unix)]
-            fuse_cwd_fd: None,
+            fuse_job_dir: None,
         }
     }
 
-    /// Set a FUSE CWD file descriptor.
-    /// When set, commands use fchdir(fd) instead of chdir(path).
-    /// Port of C tup's virt_tup_open() approach.
+    /// Set the FUSE job directory path for command execution.
+    /// Port of C tup's exec_internal: chdir(job) then chdir(dir).
     #[cfg(unix)]
-    pub fn set_fuse_cwd_fd(&mut self, fd: i32) {
-        self.fuse_cwd_fd = Some(fd);
+    pub fn set_fuse_job_dir(&mut self, dir: PathBuf) {
+        self.fuse_job_dir = Some(dir);
     }
 
     /// Set whether to continue after command failures.
@@ -210,20 +210,15 @@ impl Updater {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        // Use fchdir for FUSE CWD if available, otherwise normal chdir.
-        // C tup: child process does fchdir(root_fd) where root_fd was
-        // opened through .tup/mnt/@tupjob-N/ FUSE path.
+        // C tup: child does chdir(job) then chdir(dir) (master_fork.c:524-536).
+        // We combine both into a single chdir to the full FUSE job path which
+        // includes the work_dir relative to tup_top.
+        // This makes the child's CWD go through FUSE so all file accesses
+        // are intercepted for dependency tracking.
         #[cfg(unix)]
-        if let Some(fd) = self.fuse_cwd_fd {
-            use std::os::unix::process::CommandExt;
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::fchdir(fd) < 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
+        if let Some(ref job_dir) = self.fuse_job_dir {
+            // job_dir is already the full path: .tup/mnt/@tupjob-N/<relative_dir>
+            command.current_dir(job_dir);
         } else {
             command.current_dir(&self.work_dir);
         }

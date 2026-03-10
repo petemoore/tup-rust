@@ -655,48 +655,26 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
     let mut _next_job_id: i64 = 1;
 
     for (dir_path, rules) in &dir_rule_groups {
-        // Register FUSE job and redirect CWD through FUSE mount.
-        // C: server_exec() registers job, executes in @tupjob-N dir.
-        // Register FUSE job and open the virtual directory FD.
-        // C: virt_tup_open() opens @tupjob-N via openat(), child uses fchdir(fd).
+        // Register FUSE job and set up CWD through FUSE mount.
+        // C: server_exec() → exec_internal() → chdir(job) + chdir(dir)
         #[cfg(feature = "fuse")]
-        let (_fuse_finfo, fuse_fd) = if let Some(ref fuse) = _fuse_mount {
+        let (_fuse_finfo, fuse_job_dir) = if let Some(ref fuse) = _fuse_mount {
             let job_id = _next_job_id;
             _next_job_id += 1;
             let finfo = fuse.register_job(job_id);
+            // C: job = ".tup/mnt/@tupjob-N", dir = relative path within project
             let fuse_dir = fuse.job_path(job_id, dir_path);
-            // Open the FUSE directory to get an FD for fchdir.
-            // Use libc::open directly to ensure the path goes through FUSE.
-            // C: fd = openat(tup_top_fd(), TUP_MNT, O_RDONLY);
-            //    fd = re_openat(fd, "@tupjob-N");
-            //    root_fd = re_openat(fd, get_tup_top()+1);
-            let fd = {
-                let c_path = std::ffi::CString::new(fuse_dir.to_string_lossy().as_bytes()).ok();
-                c_path.and_then(|p| {
-                    let fd = unsafe { libc::open(p.as_ptr(), libc::O_RDONLY) };
-                    if fd >= 0 {
-                        Some(fd)
-                    } else {
-                        None
-                    }
-                })
-            };
-            (Some((job_id, finfo)), fd)
+            log::debug!("FUSE job dir: {}", fuse_dir.display());
+            (Some((job_id, finfo)), Some(fuse_dir))
         } else {
             (None, None)
         };
         #[cfg(not(feature = "fuse"))]
-        let fuse_fd: Option<i32> = None;
+        let fuse_job_dir: Option<std::path::PathBuf> = None;
 
-        let (run, failed) = execute_dir_rules(dir_path, rules, keep_going, num_jobs, fuse_fd)?;
+        let (run, failed) = execute_dir_rules(dir_path, rules, keep_going, num_jobs, fuse_job_dir)?;
         total_run += run;
         total_failed += failed;
-
-        // Close the FUSE directory FD
-        #[cfg(feature = "fuse")]
-        if let Some(fd) = fuse_fd {
-            unsafe { libc::close(fd) };
-        }
 
         // Unregister FUSE job and record dependencies in DB
         #[cfg(feature = "fuse")]
@@ -981,15 +959,15 @@ fn execute_dir_rules(
     rules: &[tup_parser::Rule],
     keep_going: bool,
     num_jobs: usize,
-    #[allow(unused_variables)] fuse_cwd_fd: Option<i32>,
+    #[allow(unused_variables)] fuse_job_dir: Option<std::path::PathBuf>,
 ) -> anyhow::Result<(usize, usize)> {
     let mut updater = tup_updater::Updater::new(work_dir);
     updater.set_keep_going(keep_going);
 
-    // Use fchdir for FUSE CWD if available
+    // Set FUSE job directory for command CWD (C: chdir(job) + chdir(dir))
     #[cfg(unix)]
-    if let Some(fd) = fuse_cwd_fd {
-        updater.set_fuse_cwd_fd(fd);
+    if let Some(dir) = fuse_job_dir {
+        updater.set_fuse_job_dir(dir);
     }
 
     // Use pre-expanded execution since expand_rules_for_dir already

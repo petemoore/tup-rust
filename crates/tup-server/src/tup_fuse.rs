@@ -265,6 +265,11 @@ impl TupFuseFs {
     /// Detects max open files via RLIMIT_NOFILE and stores our process group ID.
     pub fn new(tup_top: &Path) -> Self {
         let pgid = unsafe { libc::getpgid(0) };
+        log::debug!(
+            "TupFuseFs::new: pid={} pgid={}",
+            unsafe { libc::getpid() },
+            pgid
+        );
 
         // C: tup_fuse_fs_init() — detect max open files
         // Keep doubling rlim_cur until we hit the real limit (macOS sets rlim_max
@@ -376,8 +381,16 @@ impl TupFuseFs {
             if err.raw_os_error() == Some(libc::ESRCH) {
                 return true;
             }
+            // On macOS, getpgid can fail for other reasons too
+            return false;
         }
         if self.ourpgid != pgid {
+            log::debug!(
+                "context_check DENIED: pid={} pgid={} ourpgid={}",
+                pid,
+                pgid,
+                self.ourpgid
+            );
             return false;
         }
         true
