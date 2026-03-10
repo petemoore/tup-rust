@@ -1941,12 +1941,11 @@ fn cmd_server() {
             return;
         }
     }
-    #[cfg(target_os = "linux")]
-    {
+    if cfg!(target_os = "linux") {
         println!("ldpreload");
-        return;
+    } else {
+        println!("none");
     }
-    println!("none");
 }
 
 // -- Testing/debugging commands --
