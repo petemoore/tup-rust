@@ -88,12 +88,13 @@ impl MasterFork {
     /// This function calls `fork()`. The caller must ensure no other threads
     /// are running at the time of the call (standard fork safety requirement).
     pub fn pre_init() -> io::Result<Self> {
-        // C: setpgid(0, 0) to set own process group
-        // This ensures child processes are in the same process group for
-        // signal handling and FUSE context_check().
+        // C: setpgid(0, 0) to set own process group (master_fork.c:155).
+        // This ensures child processes inherit our pgid for FUSE context_check().
+        // Must be called before fork so the child inherits our pgid.
         unsafe {
-            if libc::getpid() != libc::getpgid(0) && libc::setpgid(0, 0) < 0 {
-                return Err(io::Error::last_os_error());
+            if libc::setpgid(0, 0) < 0 {
+                // Non-fatal on macOS if we're already the group leader
+                let _ = io::Error::last_os_error();
             }
         }
 
@@ -112,9 +113,6 @@ impl MasterFork {
             // === Child process ===
             // C: close(msd[1]) — close parent's socket end
             drop(parent_sock);
-
-            // C: use_namespacing = 0 (on non-Linux)
-            // No namespace support on macOS — skip all Linux namespace setup.
 
             // Signal parent that we're ready.
             // C: write(msd[0], "1", 1)

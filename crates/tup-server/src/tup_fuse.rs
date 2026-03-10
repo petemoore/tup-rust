@@ -376,7 +376,6 @@ impl TupFuseFs {
             if err.raw_os_error() == Some(libc::ESRCH) {
                 return true;
             }
-            // On macOS, getpgid can fail for other reasons too
             return false;
         }
         if self.ourpgid != pgid {
