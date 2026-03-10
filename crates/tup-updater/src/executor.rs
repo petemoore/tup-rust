@@ -46,12 +46,11 @@ pub struct Updater {
     commands_failed: usize,
     /// Total expected commands (set before execution for progress).
     total_expected: usize,
-    /// Optional FUSE job directory path (e.g., `.tup/mnt/@tupjob-N`).
-    /// When set, commands chdir to this path first, then chdir to the
-    /// relative work_dir within the FUSE mount.
-    /// Port of C tup's exec_internal: chdir(job) then chdir(dir).
+    /// FUSE job path (`.tup/mnt/@tupjob-N`) and dir path (relative tup_top + subdir).
+    /// When set, child does chdir(job) then chdir(dir) to enter FUSE mount.
+    /// Port of C tup's exec_internal (master_fork.c:524-536).
     #[cfg(unix)]
-    fuse_job_dir: Option<PathBuf>,
+    fuse_paths: Option<(PathBuf, PathBuf)>,
 }
 
 impl Updater {
@@ -64,15 +63,15 @@ impl Updater {
             commands_failed: 0,
             total_expected: 0,
             #[cfg(unix)]
-            fuse_job_dir: None,
+            fuse_paths: None,
         }
     }
 
-    /// Set the FUSE job directory path for command execution.
+    /// Set the FUSE job and dir paths for command execution.
     /// Port of C tup's exec_internal: chdir(job) then chdir(dir).
     #[cfg(unix)]
-    pub fn set_fuse_job_dir(&mut self, dir: PathBuf) {
-        self.fuse_job_dir = Some(dir);
+    pub fn set_fuse_job_dir(&mut self, job: PathBuf, dir: PathBuf) {
+        self.fuse_paths = Some((job, dir));
     }
 
     /// Set whether to continue after command failures.
@@ -211,14 +210,51 @@ impl Updater {
             .stderr(Stdio::piped());
 
         // C tup: child does chdir(job) then chdir(dir) (master_fork.c:524-536).
-        // We combine both into a single chdir to the full FUSE job path which
-        // includes the work_dir relative to tup_top.
-        // This makes the child's CWD go through FUSE so all file accesses
-        // are intercepted for dependency tracking.
+        // CRITICAL: We must use pre_exec with libc::chdir(), NOT Command::current_dir().
+        // Rust's current_dir() resolves the path in the parent before fork, which
+        // causes the macOS kernel to see the real path instead of the FUSE path.
+        // By doing chdir() after fork (in pre_exec), the child process enters the
+        // FUSE mount and all subsequent file operations go through FUSE.
+        // C tup: child does chdir(job) then chdir(dir) (master_fork.c:524-536).
+        // CRITICAL: We must use pre_exec with libc::chdir(), NOT Command::current_dir().
+        // Rust's current_dir() resolves the path in the parent before fork, which
+        // causes the macOS kernel to see the real path instead of the FUSE path.
+        // By doing chdir() after fork (in pre_exec), the child process enters the
+        // FUSE mount and all subsequent file operations go through FUSE.
+        //
+        // We also set the child's process group to match ours so that
+        // context_check() in the FUSE filesystem allows access.
+        // C tup: master_fork does this implicitly via the persistent forked process.
         #[cfg(unix)]
-        if let Some(ref job_dir) = self.fuse_job_dir {
-            // job_dir is already the full path: .tup/mnt/@tupjob-N/<relative_dir>
-            command.current_dir(job_dir);
+        if let Some((ref job, ref dir)) = self.fuse_paths {
+            use std::os::unix::process::CommandExt;
+            let job_path = job.clone();
+            let dir_path = dir.clone();
+            let parent_pgid = unsafe { libc::getpgid(0) };
+            unsafe {
+                command.pre_exec(move || {
+                    // Set child's process group to match parent's, so FUSE
+                    // context_check() allows access (fuse_fs.c:243-281).
+                    libc::setpgid(0, parent_pgid);
+
+                    // C: chdir(job) — relative path ".tup/mnt/@tupjob-N"
+                    // Must be relative so macOS kernel routes through FUSE.
+                    let c_job = std::ffi::CString::new(job_path.to_string_lossy().as_bytes())
+                        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+                    if libc::chdir(c_job.as_ptr()) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+
+                    // C: chdir(dir) — tup_top-relative path e.g. "Users/.../project/src"
+                    let c_dir = std::ffi::CString::new(dir_path.to_string_lossy().as_bytes())
+                        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+                    if libc::chdir(c_dir.as_ptr()) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+
+                    Ok(())
+                });
+            }
         } else {
             command.current_dir(&self.work_dir);
         }

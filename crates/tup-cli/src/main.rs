@@ -662,15 +662,33 @@ fn cmd_upd(keep_going: bool, jobs: Option<usize>, no_scan: bool) -> anyhow::Resu
             let job_id = _next_job_id;
             _next_job_id += 1;
             let finfo = fuse.register_job(job_id);
-            // C: job = ".tup/mnt/@tupjob-N", dir = relative path within project
-            let fuse_dir = fuse.job_path(job_id, dir_path);
-            log::debug!("FUSE job dir: {}", fuse_dir.display());
-            (Some((job_id, finfo)), Some(fuse_dir))
+            // C: job = ".tup/mnt/@tupjob-N", dir = get_tup_top()+1 + subdir
+            // The job path MUST be relative — absolute paths bypass FUSE on macOS.
+            // C does: chdir(".tup/mnt/@tupjob-N") then chdir("Users/.../project/subdir")
+            let job = std::path::PathBuf::from(format!(".tup/mnt/@tupjob-{job_id}"));
+            // dir = tup_top path (minus leading /) + relative subdir
+            // C: strncpy(dir, get_tup_top() + 1, ...) + snprint_tup_entry(dir + len, dtent)
+            let tup_top_rel = tup_root
+                .to_string_lossy()
+                .trim_start_matches('/')
+                .to_string();
+            let subdir_rel = dir_path
+                .strip_prefix(&tup_root)
+                .unwrap_or(std::path::Path::new(""));
+            let dir = if subdir_rel.as_os_str().is_empty() {
+                std::path::PathBuf::from(&tup_top_rel)
+            } else {
+                std::path::PathBuf::from(format!("{}/{}", tup_top_rel, subdir_rel.display()))
+            };
+            log::debug!("FUSE job={} dir={}", job.display(), dir.display());
+            // Pass both as a (job, dir) tuple packed into a single PathBuf
+            // by joining them — the executor will chdir(job) then chdir(dir)
+            (Some((job_id, finfo)), Some((job, dir)))
         } else {
             (None, None)
         };
         #[cfg(not(feature = "fuse"))]
-        let fuse_job_dir: Option<std::path::PathBuf> = None;
+        let fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
 
         let (run, failed) = execute_dir_rules(dir_path, rules, keep_going, num_jobs, fuse_job_dir)?;
         total_run += run;
@@ -959,15 +977,15 @@ fn execute_dir_rules(
     rules: &[tup_parser::Rule],
     keep_going: bool,
     num_jobs: usize,
-    #[allow(unused_variables)] fuse_job_dir: Option<std::path::PathBuf>,
+    #[allow(unused_variables)] fuse_job_dir: Option<(std::path::PathBuf, std::path::PathBuf)>,
 ) -> anyhow::Result<(usize, usize)> {
     let mut updater = tup_updater::Updater::new(work_dir);
     updater.set_keep_going(keep_going);
 
-    // Set FUSE job directory for command CWD (C: chdir(job) + chdir(dir))
+    // Set FUSE job + dir for command CWD (C: chdir(job) then chdir(dir))
     #[cfg(unix)]
-    if let Some(dir) = fuse_job_dir {
-        updater.set_fuse_job_dir(dir);
+    if let Some((job, dir)) = fuse_job_dir {
+        updater.set_fuse_job_dir(job, dir);
     }
 
     // Use pre-expanded execution since expand_rules_for_dir already
